@@ -1,0 +1,46 @@
+{
+  manifest_version: "0.2.0",
+  experimental_features: ["docker"],
+
+  // Root config: runtime secrets forwarded into component configs via AMBER_CONFIG_* env vars.
+  config_schema: {
+    type: "object",
+    properties: {
+      coding_agent: {
+        type: "object",
+        properties: {
+          openrouter_api_key: { type: "string" },
+        },
+        required: ["openrouter_api_key"],
+        additionalProperties: false,
+      },
+    },
+    required: ["coding_agent"],
+    additionalProperties: false,
+  },
+
+  components: {
+    green: {
+      manifest: "./manifests/green-agent.json5",
+      config: {
+        dockerhub_username: "jefzda",
+      },
+    },
+    coding_agent: {
+      manifest: "./manifests/purple-agent.json5",
+      config: {
+        model_name: "openrouter/deepseek/deepseek-v3.2",
+        use_gold_patches: "false",
+        openrouter_api_key: "${config.coding_agent.openrouter_api_key}",
+      },
+    },
+  },
+
+  bindings: [
+    { to: "#green.coding_agent", from: "#coding_agent.a2a" },
+  ],
+
+  exports: {
+    a2a: "#green.a2a",
+  },
+}

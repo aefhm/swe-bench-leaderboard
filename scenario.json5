@@ -33,12 +33,12 @@
     coding_agent: {
       manifest: "./manifests/purple-agent.json5",
       config: {
-        model_name: { when: "config.coding_agent.model_name", value: "${config.coding_agent.model_name}" },
+        model_name: "${config.coding_agent.model_name}",
         use_gold_patches: "false",
-        openai_api_key: { when: "config.coding_agent.openai_api_key", value: "${config.coding_agent.openai_api_key}" },
-        anthropic_api_key: { when: "config.coding_agent.anthropic_api_key", value: "${config.coding_agent.anthropic_api_key}" },
-        openrouter_api_key: { when: "config.coding_agent.openrouter_api_key", value: "${config.coding_agent.openrouter_api_key}" },
-        gemini_api_key: { when: "config.coding_agent.gemini_api_key", value: "${config.coding_agent.gemini_api_key}" },
+        openai_api_key: "${config.coding_agent.openai_api_key}",
+        anthropic_api_key: "${config.coding_agent.anthropic_api_key}",
+        openrouter_api_key: "${config.coding_agent.openrouter_api_key}",
+        gemini_api_key: "${config.coding_agent.gemini_api_key}",
       },
     },
   },

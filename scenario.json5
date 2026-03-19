@@ -26,9 +26,6 @@
   components: {
     green: {
       manifest: "./manifests/green-agent.json5",
-      config: {
-        dockerhub_username: "jefzda",
-      },
     },
     coding_agent: {
       manifest: "./manifests/purple-agent.json5",

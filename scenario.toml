@@ -6,13 +6,17 @@
 # API keys are resolved from GitHub Secrets via .env
 
 [green_agent]
-agentbeats_id = ""  # TODO: set after registering on agentbeats.dev
-env = { DOCKERHUB_USERNAME = "jefzda" }
+image = "ghcr.io/aefhm/swe-bench-green-agent:latest"
 
 [[participants]]
 agentbeats_id = ""  # Submitter fills this in with their agent's agentbeats_id
 name = "coding_agent"
-env = { OPENROUTER_API_KEY = "${OPENROUTER_API_KEY}" }
+
+[participants.env]
+OPENAI_API_KEY = "${OPENAI_API_KEY}"
+ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY}"
+OPENROUTER_API_KEY = "${OPENROUTER_API_KEY}"
+GEMINI_API_KEY = "${GEMINI_API_KEY}"
 
 [config]
 instances = []  # empty = all 731

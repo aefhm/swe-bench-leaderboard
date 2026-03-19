@@ -138,8 +138,10 @@ jobs:
 
       - name: Create .env with secrets
         working-directory: amber-out
+        env:
+          SECRETS_JSON: ${{ toJSON(secrets) }}
         run: |
-          echo "AMBER_CONFIG_CODING_AGENT__OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" > .env
+          echo "$SECRETS_JSON" | jq -r 'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_CODING_AGENT__\(.key)=\(.value)"' > .env
 
       # ── Start Amber scenario (stays up for entire batch) ──────
       - name: Start Amber scenario

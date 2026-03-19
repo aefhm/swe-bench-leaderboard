@@ -3,15 +3,19 @@
   experimental_features: ["docker"],
 
   // Root config: runtime secrets forwarded into component configs via AMBER_CONFIG_* env vars.
+  // All fields are optional — submitters provide whichever API keys their model needs.
   config_schema: {
     type: "object",
     properties: {
       coding_agent: {
         type: "object",
         properties: {
+          model_name: { type: "string" },
+          openai_api_key: { type: "string" },
+          anthropic_api_key: { type: "string" },
           openrouter_api_key: { type: "string" },
+          gemini_api_key: { type: "string" },
         },
-        required: ["openrouter_api_key"],
         additionalProperties: false,
       },
     },
@@ -29,9 +33,12 @@
     coding_agent: {
       manifest: "./manifests/purple-agent.json5",
       config: {
-        model_name: "openrouter/deepseek/deepseek-v3.2",
+        model_name: { when: "config.coding_agent.model_name", value: "${config.coding_agent.model_name}" },
         use_gold_patches: "false",
-        openrouter_api_key: "${config.coding_agent.openrouter_api_key}",
+        openai_api_key: { when: "config.coding_agent.openai_api_key", value: "${config.coding_agent.openai_api_key}" },
+        anthropic_api_key: { when: "config.coding_agent.anthropic_api_key", value: "${config.coding_agent.anthropic_api_key}" },
+        openrouter_api_key: { when: "config.coding_agent.openrouter_api_key", value: "${config.coding_agent.openrouter_api_key}" },
+        gemini_api_key: { when: "config.coding_agent.gemini_api_key", value: "${config.coding_agent.gemini_api_key}" },
       },
     },
   },

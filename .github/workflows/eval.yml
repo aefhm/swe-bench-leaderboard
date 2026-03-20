@@ -3,9 +3,17 @@ name: Eval
 on:
   workflow_dispatch:
     inputs:
+      model_name:
+        description: "LLM model name for litellm (e.g., openrouter/deepseek/deepseek-v3.2, anthropic/claude-sonnet-4-5-20250929)"
+        default: ""
+        type: string
       max_instances:
         description: "Instances to evaluate (0 = all 731)"
         default: "3"
+        type: string
+      instance_ids:
+        description: "Comma-separated instance IDs to evaluate (empty = all)"
+        default: ""
         type: string
       batch_size:
         description: "Instances per parallel runner"
@@ -29,13 +37,16 @@ jobs:
 
           MAX = int("${{ inputs.max_instances || '0' }}")
           BATCH_SIZE = int("${{ inputs.batch_size || '37' }}")
+          INSTANCE_IDS = "${{ inputs.instance_ids || '' }}".strip()
 
-          with open("data/instances.jsonl") as f:
-              all_inst = [json.loads(line) for line in f if line.strip()]
-          instances = [i["short_id"] for i in all_inst if "short_id" in i]
-
-          if MAX > 0:
-              instances = instances[:MAX]
+          if INSTANCE_IDS:
+              instances = [s.strip() for s in INSTANCE_IDS.split(",") if s.strip()]
+          else:
+              with open("data/instances.jsonl") as f:
+                  all_inst = [json.loads(line) for line in f if line.strip()]
+              instances = [i["short_id"] for i in all_inst if "short_id" in i]
+              if MAX > 0:
+                  instances = instances[:MAX]
 
           batches = []
           for i in range(0, len(instances), BATCH_SIZE):
@@ -136,12 +147,16 @@ jobs:
             exit 1
           fi
 
-      - name: Create .env with secrets
+      - name: Create .env with config and secrets
         working-directory: amber-out
         env:
           SECRETS_JSON: ${{ toJSON(secrets) }}
+          MODEL_NAME: ${{ inputs.model_name }}
         run: |
           echo "$SECRETS_JSON" | jq -r 'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_CODING_AGENT__\(.key)=\(.value)"' > .env
+          if [[ -n "$MODEL_NAME" ]]; then
+            echo "AMBER_CONFIG_CODING_AGENT__MODEL_NAME=$MODEL_NAME" >> .env
+          fi
 
       # ── Start Amber scenario (stays up for entire batch) ──────
       - name: Start Amber scenario

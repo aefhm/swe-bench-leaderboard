@@ -13,6 +13,7 @@ agentbeats_id = ""  # Submitter fills this in with their agent's agentbeats_id
 name = "coding_agent"
 
 [participants.env]
+MODEL_NAME = "${MODEL_NAME}"
 OPENAI_API_KEY = "${OPENAI_API_KEY}"
 ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY}"
 OPENROUTER_API_KEY = "${OPENROUTER_API_KEY}"

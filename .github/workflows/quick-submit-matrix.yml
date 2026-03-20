@@ -106,13 +106,12 @@ jobs:
           # scenario.json5 references ./manifests/green-agent.json5 via
           # components.green.manifest — extract it with a lightweight parse.
           python3 << 'PYEOF'
-          import json, re, os, pathlib
+          import json, re, os, pathlib, urllib.request
 
           scenario_path = "${{ steps.scenario.outputs.path }}"
 
           # json5 files need comment/trailing-comma stripping for json.loads
-          def load_json5(path):
-              text = pathlib.Path(path).read_text()
+          def parse_json5(text):
               # strip // comments (but not inside strings — good enough for manifests)
               text = re.sub(r'(?m)^\s*//.*$', '', text)
               text = re.sub(r'(?<!:)//.*$', '', text, flags=re.MULTILINE)
@@ -122,15 +121,28 @@ jobs:
               text = re.sub(r'(?<=[{,\n])\s*(\w+)\s*:', r' "\1":', text)
               return json.loads(text)
 
-          # Load scenario to find green agent manifest path
+          def load_json5(path_or_url):
+              if path_or_url.startswith("http://") or path_or_url.startswith("https://"):
+                  print(f"Fetching manifest from URL: {path_or_url}")
+                  with urllib.request.urlopen(path_or_url, timeout=30) as resp:
+                      text = resp.read().decode()
+              else:
+                  text = pathlib.Path(path_or_url).read_text()
+              return parse_json5(text)
+
+          # Load scenario to find green agent manifest ref (local path or URL)
           scenario = load_json5(scenario_path)
-          green_manifest_rel = scenario.get("components", {}).get("green", {}).get("manifest", "")
-          if not green_manifest_rel:
+          green_manifest_ref = scenario.get("components", {}).get("green", {}).get("manifest", "")
+          if not green_manifest_ref:
               print("No green agent manifest found in scenario; using defaults")
               config = {}
           else:
-              scenario_dir = str(pathlib.Path(scenario_path).parent)
-              green_manifest_path = str(pathlib.Path(scenario_dir, green_manifest_rel))
+              # If it's a URL, fetch directly; otherwise resolve relative to scenario dir
+              if green_manifest_ref.startswith("http://") or green_manifest_ref.startswith("https://"):
+                  green_manifest_path = green_manifest_ref
+              else:
+                  scenario_dir = str(pathlib.Path(scenario_path).parent)
+                  green_manifest_path = str(pathlib.Path(scenario_dir, green_manifest_ref))
               print(f"Green agent manifest: {green_manifest_path}")
               manifest = load_json5(green_manifest_path)
               config = manifest.get("metadata", {}).get("assessment_config", {})

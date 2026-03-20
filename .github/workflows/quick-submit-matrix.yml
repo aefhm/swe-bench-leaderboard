@@ -1,0 +1,609 @@
+name: Quick Submit (Matrix)
+
+# Matrix-enabled quick-submit workflow.
+# Splits instances into batches and runs them in parallel, reusing the
+# matrix strategy from eval.yml.
+#
+# Trigger via workflow_dispatch for local testing, or via PR with
+# quick-submit- branch prefix (same as the non-matrix workflow).
+#
+# NOTE: The OIDC / GCP-KMS secrets flow from quick-submit-runner.yml is
+# commented out because the hardcoded config doesn't match production yet.
+# Secrets should be configured as repo/action secrets before triggering.
+
+on:
+  workflow_dispatch:
+    inputs:
+      submission_id:
+        description: "Submission UUID (if not using a PR branch)"
+        default: ""
+        type: string
+      max_instances:
+        description: "Instances to evaluate (0 = all)"
+        default: "3"
+        type: string
+      instance_ids:
+        description: "Comma-separated instance IDs (empty = all)"
+        default: ""
+        type: string
+      batch_size:
+        description: "Instances per parallel runner"
+        default: "37"
+        type: string
+      model_name:
+        description: "LLM model name for litellm"
+        default: ""
+        type: string
+
+  pull_request:
+    types: [opened, reopened]
+    branches: [main]
+
+jobs:
+  # ── Resolve submission & chunk instances into batches ──────────────
+  setup:
+    # Only run on PR if branch matches quick-submit- prefix
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.head_ref, 'quick-submit-')
+    runs-on: ubuntu-latest
+    outputs:
+      batches: ${{ steps.parse.outputs.batches }}
+      scenario_path: ${{ steps.scenario.outputs.path }}
+      scenario_base: ${{ steps.scenario.outputs.base }}
+      submission_id: ${{ steps.submission.outputs.submission_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref }}
+
+      - name: Resolve submission ID
+        id: submission
+        shell: bash
+        run: |
+          set -euo pipefail
+          # From workflow_dispatch input or from branch name
+          sid="${{ inputs.submission_id || '' }}"
+          if [[ -z "$sid" ]]; then
+            ref_name="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-}}"
+            if [[ "$ref_name" =~ ^quick-submit-([0-9a-fA-F-]{36})$ ]]; then
+              sid="${BASH_REMATCH[1]}"
+            fi
+          fi
+          if [[ -z "$sid" ]]; then
+            echo "No submission ID found (set input or use quick-submit-matrix-<UUID> branch)" >&2
+            echo "submission_id=" >> "$GITHUB_OUTPUT"
+          else
+            echo "submission_id=$sid" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Find scenario file
+        id: scenario
+        shell: bash
+        env:
+          SUBMISSION_ID: ${{ steps.submission.outputs.submission_id }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$SUBMISSION_ID" ]]; then
+            scenario=$(ls submissions/*"${SUBMISSION_ID}"*.json 2>/dev/null | grep -v provenance | head -1 || true)
+          fi
+          # Fall back to the repo's default scenario
+          if [[ -z "${scenario:-}" ]]; then
+            echo "No submission-specific scenario found; using default scenario.json5"
+            scenario="scenario.json5"
+          fi
+          base=$(basename "$scenario" | sed 's/\.\(json5\?\|toml\)$//')
+          echo "path=$scenario" >> "$GITHUB_OUTPUT"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "Using scenario: $scenario"
+
+      - name: Extract assessment_config from green agent manifest
+        id: assessment_config
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Resolve the green agent manifest path from the scenario.
+          # scenario.json5 references ./manifests/green-agent.json5 via
+          # components.green.manifest — extract it with a lightweight parse.
+          python3 << 'PYEOF'
+          import json, re, os, pathlib
+
+          scenario_path = "${{ steps.scenario.outputs.path }}"
+
+          # json5 files need comment/trailing-comma stripping for json.loads
+          def load_json5(path):
+              text = pathlib.Path(path).read_text()
+              # strip // comments (but not inside strings — good enough for manifests)
+              text = re.sub(r'(?m)^\s*//.*$', '', text)
+              text = re.sub(r'(?<!:)//.*$', '', text, flags=re.MULTILINE)
+              # strip trailing commas before } or ]
+              text = re.sub(r',\s*([}\]])', r'\1', text)
+              # unquoted keys → quoted keys (simple: word before colon)
+              text = re.sub(r'(?<=[{,\n])\s*(\w+)\s*:', r' "\1":', text)
+              return json.loads(text)
+
+          # Load scenario to find green agent manifest path
+          scenario = load_json5(scenario_path)
+          green_manifest_rel = scenario.get("components", {}).get("green", {}).get("manifest", "")
+          if not green_manifest_rel:
+              print("No green agent manifest found in scenario; using defaults")
+              config = {}
+          else:
+              scenario_dir = str(pathlib.Path(scenario_path).parent)
+              green_manifest_path = str(pathlib.Path(scenario_dir, green_manifest_rel))
+              print(f"Green agent manifest: {green_manifest_path}")
+              manifest = load_json5(green_manifest_path)
+              config = manifest.get("metadata", {}).get("assessment_config", {})
+
+          print(f"assessment_config from manifest: {json.dumps(config, indent=2)}")
+
+          # Write each field as a step output
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"max_instances={config.get('max_instances', 0)}\n")
+              out.write(f"batch_size={config.get('batch_size', 37)}\n")
+              ids = config.get("instance_ids", [])
+              out.write(f"instance_ids={','.join(ids) if ids else ''}\n")
+          PYEOF
+
+      - name: Parse instances and chunk into batches
+        id: parse
+        env:
+          # workflow_dispatch inputs override manifest values; manifest is the default
+          MANIFEST_MAX: ${{ steps.assessment_config.outputs.max_instances }}
+          MANIFEST_BATCH_SIZE: ${{ steps.assessment_config.outputs.batch_size }}
+          MANIFEST_INSTANCE_IDS: ${{ steps.assessment_config.outputs.instance_ids }}
+        run: |
+          python3 << 'PYEOF'
+          import json, os
+
+          # Precedence: workflow_dispatch input > manifest assessment_config > hardcoded default
+          def resolve(input_val, manifest_val, default):
+              """Return the first non-empty value."""
+              for v in [input_val, manifest_val]:
+                  if v is not None and str(v).strip() not in ("", "0"):
+                      return v
+              return default
+
+          input_max = "${{ inputs.max_instances || '' }}".strip()
+          input_batch = "${{ inputs.batch_size || '' }}".strip()
+          input_ids = "${{ inputs.instance_ids || '' }}".strip()
+
+          manifest_max = os.environ.get("MANIFEST_MAX", "").strip()
+          manifest_batch = os.environ.get("MANIFEST_BATCH_SIZE", "").strip()
+          manifest_ids = os.environ.get("MANIFEST_INSTANCE_IDS", "").strip()
+
+          MAX = int(resolve(input_max, manifest_max, "0"))
+          BATCH_SIZE = int(resolve(input_batch, manifest_batch, "37"))
+
+          # For instance_ids, non-empty input wins, then manifest, then empty (= all)
+          INSTANCE_IDS = input_ids or manifest_ids
+
+          print(f"Config resolution:")
+          print(f"  max_instances: {MAX}  (input={input_max!r}, manifest={manifest_max!r})")
+          print(f"  batch_size:    {BATCH_SIZE}  (input={input_batch!r}, manifest={manifest_batch!r})")
+          print(f"  instance_ids:  {INSTANCE_IDS!r}  (input={input_ids!r}, manifest={manifest_ids!r})")
+
+          if INSTANCE_IDS:
+              instances = [s.strip() for s in INSTANCE_IDS.split(",") if s.strip()]
+          else:
+              with open("data/instances.jsonl") as f:
+                  all_inst = [json.loads(line) for line in f if line.strip()]
+              instances = [i["short_id"] for i in all_inst if "short_id" in i]
+              if MAX > 0:
+                  instances = instances[:MAX]
+
+          batches = []
+          for i in range(0, len(instances), BATCH_SIZE):
+              batch = instances[i:i + BATCH_SIZE]
+              batches.append({
+                  "id": f"batch-{i // BATCH_SIZE:03d}",
+                  "instances": json.dumps(batch),
+              })
+
+          print(f"\nTotal instances: {len(instances)}")
+          print(f"Batch size: {BATCH_SIZE}")
+          print(f"Total batches: {len(batches)}")
+          for b in batches:
+              print(f"  {b['id']}: {len(json.loads(b['instances']))} instances")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"batches={json.dumps(batches)}\n")
+          PYEOF
+
+  # ── Matrix eval job — one runner per batch ────────────────────────
+  eval:
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      matrix:
+        batch: ${{ fromJSON(needs.setup.outputs.batches) }}
+      fail-fast: false
+      max-parallel: 20
+
+    permissions:
+      id-token: write
+      contents: write
+      packages: read
+
+    env:
+      AMBER_IMAGE: ghcr.io/rdi-foundation/amber-cli:v0.3
+      AMBER_COMPOSE_DIR: amber-out
+      AMBER_COMPOSE_PROJECT: amber-qs-matrix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.batch.id }}
+      AMBER_PROXY_PORT: "9009"
+      RESULTS_TIMEOUT_MINUTES: ${{ vars.QUICK_SUBMIT_TIMEOUT_MINUTES || '30' }}
+      # Scenario resolved in setup
+      SCENARIO_PATH: ${{ needs.setup.outputs.scenario_path }}
+
+    steps:
+      - name: Free disk space
+        run: |
+          echo "Before: $(df -h / | tail -1 | awk '{print $4}') free"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/chromium /usr/local/graalvm /opt/hostedtoolcache 2>/dev/null || true
+          sudo docker image prune -af 2>/dev/null || true
+          echo "After: $(df -h / | tail -1 | awk '{print $4}') free"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Secrets ──────────────────────────────────────────────────
+      # The OIDC / GCP-KMS flow from quick-submit-runner.yml is commented
+      # out — the hardcoded WIF provider / service account don't match this
+      # repo's production setup. For now, secrets are expected as repo or
+      # action secrets (same approach as eval.yml).
+      #
+      # TODO: Uncomment and configure when upstream WIF is ready.
+      #
+      # - name: Fetch GitHub OIDC token
+      #   id: oidc
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
+      #     oidc_response="$(curl -fsS \
+      #       -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+      #       "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${OIDC_AUDIENCE}")"
+      #     oidc_token="$(jq -r '.value' <<<"$oidc_response")"
+      #     if [[ -z "$oidc_token" || "$oidc_token" == "null" ]]; then
+      #       echo "Failed to fetch OIDC token" >&2; exit 1
+      #     fi
+      #     echo "::add-mask::$oidc_token"
+      #     echo "token=$oidc_token" >> "$GITHUB_OUTPUT"
+      #
+      # - name: Fetch secrets bundle
+      #   id: bundle
+      #   shell: bash
+      #   env:
+      #     BACKEND_URL: ${{ env.AGENTBEATS_URL }}
+      #     SUBMISSION_ID: ${{ needs.setup.outputs.submission_id }}
+      #     OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+      #   run: |
+      #     set -euo pipefail
+      #     secrets_url="${BACKEND_URL}/api/quick-submit/${SUBMISSION_ID}/secrets"
+      #     http_code="$(curl -sS -o secrets_response.json -w "%{http_code}" \
+      #       -H "Authorization: Bearer ${OIDC_TOKEN}" "$secrets_url" || true)"
+      #     if [[ "$http_code" != "200" ]]; then
+      #       echo "Backend returned HTTP ${http_code}:" >&2
+      #       cat secrets_response.json >&2; exit 1
+      #     fi
+      #     echo "secrets_blob_b64=$(jq -r '.secrets_blob' secrets_response.json)" >> "$GITHUB_OUTPUT"
+      #     echo "wrapped_dek_b64=$(jq -r '.wrapped_dek' secrets_response.json)" >> "$GITHUB_OUTPUT"
+      #     echo "iv_b64=$(jq -r '.metadata.iv' secrets_response.json)" >> "$GITHUB_OUTPUT"
+      #     echo "key_id=$(jq -r '.metadata.key_id' secrets_response.json)" >> "$GITHUB_OUTPUT"
+      #
+      # - name: Authenticate to GCP
+      #   id: gcp-auth
+      #   uses: google-github-actions/auth@v2
+      #   with:
+      #     workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+      #     service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
+      #     token_format: access_token
+      #
+      # - name: Unwrap DEK via KMS
+      #   id: dek
+      #   shell: bash
+      #   env:
+      #     GCP_ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
+      #     KMS_KEY_ID: ${{ steps.bundle.outputs.key_id }}
+      #     WRAPPED_DEK_B64: ${{ steps.bundle.outputs.wrapped_dek_b64 }}
+      #   run: |
+      #     set -euo pipefail
+      #     kms_url="https://cloudkms.googleapis.com/v1/${KMS_KEY_ID}:asymmetricDecrypt"
+      #     http_code="$(curl -sS -o kms_response.json -w "%{http_code}" \
+      #       -H "Authorization: Bearer ${GCP_ACCESS_TOKEN}" \
+      #       -H 'Content-Type: application/json' \
+      #       -d "{\"ciphertext\":\"${WRAPPED_DEK_B64}\"}" "$kms_url" || true)"
+      #     if [[ "$http_code" != "200" ]]; then
+      #       echo "KMS returned HTTP ${http_code}:" >&2
+      #       cat kms_response.json >&2; exit 1
+      #     fi
+      #     dek_b64="$(jq -r '.plaintext' kms_response.json)"
+      #     echo "::add-mask::$dek_b64"
+      #     echo "dek_b64=$dek_b64" >> "$GITHUB_OUTPUT"
+      #
+      # - name: Decrypt and export secrets
+      #   shell: bash
+      #   env:
+      #     DEK_B64: ${{ steps.dek.outputs.dek_b64 }}
+      #     IV_B64: ${{ steps.bundle.outputs.iv_b64 }}
+      #     CIPHERTEXT_B64: ${{ steps.bundle.outputs.secrets_blob_b64 }}
+      #   run: |
+      #     ... (decrypt via node AES-256-GCM, export AMBER_CONFIG_* vars)
+
+      # ── Install amber CLI ────────────────────────────────────────
+      - name: Install amber CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "${AMBER_IMAGE}"
+          cid="$(docker create "${AMBER_IMAGE}")"
+          cleanup() { docker rm "${cid}" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          install -d "${RUNNER_TEMP}/bin"
+          docker cp "${cid}:/amber" "${RUNNER_TEMP}/bin/amber"
+          chmod +x "${RUNNER_TEMP}/bin/amber"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+          "${RUNNER_TEMP}/bin/amber" --help >/dev/null
+
+      # ── Compile Amber scenario ───────────────────────────────────
+      - name: Compile scenario
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "${AMBER_COMPOSE_DIR}"
+          amber compile "${SCENARIO_PATH}" \
+            --docker-compose "${AMBER_COMPOSE_DIR}"
+
+      - name: Patch compose for direct Docker socket
+        run: |
+          python3 - <<'PYTHON'
+          import re
+
+          with open("amber-out/compose.yaml") as f:
+              content = f.read()
+
+          content = re.sub(
+              r'\n\s*- AMBER_DOCKER_MOUNT_PROXY_SPEC_B64=[^\n]+',
+              '',
+              content,
+          )
+
+          for service in ['c1-coding-agent', 'c2-green']:
+              pattern = rf'(  {service}:.*?volumes:\n\s*- amber-helper-bin:/amber/bin:ro)'
+              replacement = r'\1\n    - /var/run/docker.sock:/var/run/docker.sock'
+              content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+
+          with open("amber-out/compose.yaml", "w") as f:
+              f.write(content)
+          PYTHON
+
+      - name: Verify HelperRunner pattern
+        run: |
+          if grep -q "AMBER_ROOT_CONFIG_SCHEMA_B64" amber-out/compose.yaml; then
+            echo "✓ Compose uses HelperRunner pattern"
+          else
+            echo "✗ Compose uses Resolved pattern — secrets won't flow at runtime"
+            exit 1
+          fi
+
+      # ── Create .env — uses repo/action secrets (like eval.yml) ───
+      - name: Create .env with config and secrets
+        working-directory: amber-out
+        env:
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+          MODEL_NAME: ${{ inputs.model_name }}
+        run: |
+          echo "$SECRETS_JSON" | jq -r 'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_CODING_AGENT__\(.key)=\(.value)"' > .env
+          if [[ -n "${MODEL_NAME:-}" ]]; then
+            echo "AMBER_CONFIG_CODING_AGENT__MODEL_NAME=$MODEL_NAME" >> .env
+          fi
+
+      # ── Start Amber scenario (stays up for entire batch) ─────────
+      - name: Start Amber scenario
+        working-directory: amber-out
+        run: |
+          docker compose -p "${AMBER_COMPOSE_PROJECT}" up -d
+          docker compose -p "${AMBER_COMPOSE_PROJECT}" logs -f &
+
+      - name: Wait for agents
+        run: |
+          for i in $(seq 1 60); do
+            green=$(docker compose -f amber-out/compose.yaml -p "${AMBER_COMPOSE_PROJECT}" logs c2-green 2>&1 | grep -c "Uvicorn running" || true)
+            purple=$(docker compose -f amber-out/compose.yaml -p "${AMBER_COMPOSE_PROJECT}" logs c1-coding-agent 2>&1 | grep -c "Uvicorn running" || true)
+            if [ "$green" -ge 1 ] && [ "$purple" -ge 1 ]; then
+              echo "Both agents ready"
+              break
+            fi
+            echo "Waiting... ($i/60)"
+            sleep 3
+          done
+
+      - name: Start proxy
+        run: |
+          amber proxy amber-out \
+            --project-name "${AMBER_COMPOSE_PROJECT}" \
+            --export a2a=0.0.0.0:${AMBER_PROXY_PORT} &
+          sleep 3
+
+      # ── Install eval runner deps ─────────────────────────────────
+      - name: Install eval runner
+        run: pip install httpx
+
+      # ── Run batch ────────────────────────────────────────────────
+      - name: Run batch — ${{ matrix.batch.id }}
+        run: |
+          INSTANCES='${{ matrix.batch.instances }}'
+          echo "Batch: ${{ matrix.batch.id }}"
+          echo "Instances: $INSTANCES"
+          echo ""
+
+          mkdir -p amber-out/output/per-instance
+          BATCH_PASSED=0
+          BATCH_TOTAL=0
+          BATCH_ERRORS=""
+
+          for INSTANCE in $(echo "$INSTANCES" | python3 -c "import sys,json; [print(i) for i in json.load(sys.stdin)]"); do
+            echo ""
+            echo "=========================================="
+            echo "  Instance: $INSTANCE"
+            echo "=========================================="
+            START_TIME=$(date +%s)
+
+            EXIT_CODE=0
+            python3 eval_runner.py \
+              --endpoint http://127.0.0.1:${AMBER_PROXY_PORT} \
+              --instances "$INSTANCE" \
+              --output "amber-out/output/per-instance/${INSTANCE}.json" \
+              --timeout 1800 || EXIT_CODE=$?
+
+            END_TIME=$(date +%s)
+            ELAPSED=$((END_TIME - START_TIME))
+            echo ""
+            echo "=== $INSTANCE finished in ${ELAPSED}s ($((ELAPSED / 60))m $((ELAPSED % 60))s) ==="
+
+            if [ ! -f "amber-out/output/per-instance/${INSTANCE}.json" ]; then
+              echo "WARNING: No results file for $INSTANCE"
+              echo "{\"instance\": \"$INSTANCE\", \"error\": \"no results file\", \"exit_code\": $EXIT_CODE}" > "amber-out/output/per-instance/${INSTANCE}.json"
+            fi
+
+            # Clean up sweap evaluation images to reclaim disk
+            docker images --filter "reference=*/sweap-images:*" -q | xargs -r docker rmi -f 2>/dev/null || true
+            echo "Disk free: $(df -h / | tail -1 | awk '{print $4}')"
+
+            BATCH_TOTAL=$((BATCH_TOTAL + 1))
+            if [ $EXIT_CODE -eq 0 ]; then
+              BATCH_PASSED=$((BATCH_PASSED + 1))
+            else
+              BATCH_ERRORS="$BATCH_ERRORS $INSTANCE"
+            fi
+          done
+
+          echo ""
+          echo "=========================================="
+          echo "  Batch ${{ matrix.batch.id }} Summary"
+          echo "  Completed: $BATCH_TOTAL instances"
+          echo "  Passed: $BATCH_PASSED / $BATCH_TOTAL"
+          if [ -n "$BATCH_ERRORS" ]; then
+            echo "  Errors:$BATCH_ERRORS"
+          fi
+          echo "=========================================="
+        timeout-minutes: 300
+
+      # ── Cleanup ──────────────────────────────────────────────────
+      - name: Show logs
+        if: always()
+        run: |
+          echo "=== Coding Agent (last 50) ==="
+          docker compose -f amber-out/compose.yaml -p "${AMBER_COMPOSE_PROJECT}" logs c1-coding-agent 2>&1 | tail -50 || true
+          echo "=== Green Agent (last 50) ==="
+          docker compose -f amber-out/compose.yaml -p "${AMBER_COMPOSE_PROJECT}" logs c2-green 2>&1 | tail -50 || true
+
+      - name: Stop scenario
+        if: always()
+        run: docker compose -f amber-out/compose.yaml -p "${AMBER_COMPOSE_PROJECT}" down -v --remove-orphans || true
+
+      - name: Upload batch results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: qs-matrix-${{ matrix.batch.id }}
+          path: amber-out/output/per-instance/
+          retention-days: 30
+
+  # ── Aggregate results across all batches ──────────────────────────
+  summary:
+    needs: [setup, eval]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all results
+        uses: actions/download-artifact@v8
+        with:
+          path: results
+          pattern: qs-matrix-*
+          merge-multiple: false
+
+      - name: Aggregate results
+        run: |
+          python3 << 'PYEOF'
+          import json, glob, os
+
+          all_results = []
+          total_passed = 0
+          total_count = 0
+          errors = []
+
+          for f in sorted(glob.glob("results/qs-matrix-batch-*/*.json")):
+              with open(f) as fh:
+                  data = json.load(fh)
+
+              if "error" in data and "results" not in data:
+                  all_results.append(data)
+                  total_count += 1
+                  errors.append(data.get("instance", os.path.basename(f)))
+                  continue
+
+              for inst in data.get("results", []):
+                  all_results.append(inst)
+                  total_count += 1
+                  if inst.get("passed"):
+                      total_passed += 1
+                  elif inst.get("error"):
+                      errors.append(inst.get("instance_id", "?"))
+
+          accuracy = total_passed / total_count if total_count > 0 else 0.0
+          print(f"=== Aggregate Results ===")
+          print(f"Accuracy: {accuracy:.1%} ({total_passed}/{total_count})")
+          print()
+          for r in all_results:
+              status = "PASS" if r.get("passed") else "FAIL"
+              iid = r.get("instance_id", r.get("instance", "?"))
+              err = f"  error: {r['error']}" if r.get("error") else ""
+              print(f"  [{status}] {iid}{err}")
+
+          if errors:
+              print(f"\n{len(errors)} instance(s) had errors")
+
+          summary = {
+              "accuracy": accuracy,
+              "passed": total_passed,
+              "total": total_count,
+              "results": all_results,
+          }
+          with open("aggregate-results.json", "w") as f:
+              json.dump(summary, f, indent=2)
+          PYEOF
+
+      - name: Upload aggregate results
+        uses: actions/upload-artifact@v7
+        with:
+          name: qs-matrix-aggregate
+          path: aggregate-results.json
+          retention-days: 30
+
+      # ── Commit results (optional, for submission PRs) ────────────
+      # Uncomment when ready to auto-commit results back to the PR branch.
+      #
+      # - uses: actions/checkout@v4
+      #   with:
+      #     ref: ${{ github.head_ref || github.ref }}
+      #
+      # - name: Commit results
+      #   env:
+      #     BASE: ${{ needs.setup.outputs.scenario_base }}
+      #   run: |
+      #     git config user.name "github-actions[bot]"
+      #     git config user.email "github-actions[bot]@users.noreply.github.com"
+      #     mkdir -p results
+      #     cp aggregate-results.json "results/${BASE}.json"
+      #     git add "results/${BASE}.json"
+      #     git commit -m "[AgentBeats] Matrix scenario results" || echo "Nothing to commit"
+      #     git push

@@ -157,13 +157,14 @@ jobs:
         run: |
           set -euo pipefail
           # Participant secrets
-          echo "$SECRETS_JSON" | jq -r 'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_CODING_AGENT__\(.key)=\(.value | sub("\\s+$";""))"' > .env
+          echo "$SECRETS_JSON" | jq -r 'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_CODING_AGENT__\(.key | ascii_downcase)=\(.value | sub("\\s+$";""))"' > .env
           if [[ -n "$MODEL_NAME" ]]; then
             echo "AMBER_CONFIG_CODING_AGENT__MODEL_NAME=$MODEL_NAME" >> .env
           fi
-          # Batch instance IDs → green agent auto-start config
+          # Batch instance IDs → green agent config (instance_ids, max_instances)
           instance_ids=$(echo "$BATCH_INSTANCES" | python3 -c "import sys,json; print(','.join(json.load(sys.stdin)))")
-          echo "AMBER_CONFIG__GREEN_INSTANCE_IDS=${instance_ids}" >> .env
+          echo "AMBER_CONFIG_GREEN__instance_ids=${instance_ids}" >> .env
+          echo "AMBER_CONFIG_GREEN__max_instances=0" >> .env
           echo "Batch ${{ matrix.batch.id }}: ${instance_ids}"
 
       # ── Run scenario with polling ───────────────────────────────

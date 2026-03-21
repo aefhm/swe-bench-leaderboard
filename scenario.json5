@@ -18,6 +18,14 @@
         },
         additionalProperties: false,
       },
+      green: {
+        type: "object",
+        properties: {
+          instance_ids: { type: "string" },
+          max_instances: { type: "string" },
+        },
+        additionalProperties: false,
+      },
     },
     required: ["coding_agent"],
     additionalProperties: false,
@@ -26,6 +34,10 @@
   components: {
     green: {
       manifest: "./manifests/green-agent.json5",
+      config: {
+        instance_ids: "${config.green.instance_ids}",
+        max_instances: "${config.green.max_instances}",
+      },
     },
     coding_agent: {
       manifest: "./manifests/purple-agent.json5",

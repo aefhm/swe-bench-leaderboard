@@ -480,7 +480,7 @@ jobs:
         run: |
           set -euo pipefail
           # Participant secrets
-          echo "$SECRETS_JSON" | jq -r 'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_CODING_AGENT__\(.key)=\(.value | sub("\\s+$";""))"' > .env
+          echo "$SECRETS_JSON" | jq -r 'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_CODING_AGENT__\(.key | ascii_downcase)=\(.value | sub("\\s+$";""))"' > .env
           if [[ -n "${MODEL_NAME:-}" ]]; then
             echo "AMBER_CONFIG_CODING_AGENT__MODEL_NAME=$MODEL_NAME" >> .env
           fi

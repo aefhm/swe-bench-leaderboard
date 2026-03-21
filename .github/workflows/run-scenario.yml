@@ -163,7 +163,7 @@ jobs:
           fi
           # Batch instance IDs → green agent auto-start config
           instance_ids=$(echo "$BATCH_INSTANCES" | python3 -c "import sys,json; print(','.join(json.load(sys.stdin)))")
-          echo "AMBER_CONFIG_GREEN__INSTANCE_IDS=${instance_ids}" >> .env
+          echo "AMBER_CONFIG__GREEN_INSTANCE_IDS=${instance_ids}" >> .env
           echo "Batch ${{ matrix.batch.id }}: ${instance_ids}"
 
       # ── Run scenario with polling ───────────────────────────────

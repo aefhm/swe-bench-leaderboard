@@ -480,7 +480,7 @@ jobs:
         run: |
           set -euo pipefail
           # Participant secrets
-          echo "$SECRETS_JSON" | jq -r 'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_CODING_AGENT__\(.key)=\(.value)"' > .env
+          echo "$SECRETS_JSON" | jq -r 'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_CODING_AGENT__\(.key)=\(.value | sub("\\s+$";""))"' > .env
           if [[ -n "${MODEL_NAME:-}" ]]; then
             echo "AMBER_CONFIG_CODING_AGENT__MODEL_NAME=$MODEL_NAME" >> .env
           fi
@@ -683,6 +683,23 @@ jobs:
           docker cp "${cid}:/amber" "${RUNNER_TEMP}/bin/amber"
           chmod +x "${RUNNER_TEMP}/bin/amber"
           echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+
+      # HACK: Patch submission JSON to manifest v0.2.0 with experimental_features
+      # so amber compile doesn't reject child manifests that declare ["docker"].
+      # Remove once the agentbeats backend generates v0.2.0 submissions natively.
+      - name: Patch submission to manifest v0.2.0
+        run: |
+          set -euo pipefail
+          if [[ "$SCENARIO_PATH" != *.json ]]; then
+            echo "Not a submission JSON ($SCENARIO_PATH); skipping patch"
+            exit 0
+          fi
+          echo "Patching $SCENARIO_PATH → manifest_version 0.2.0 + experimental_features [docker]"
+          jq '.manifest_version = "0.2.0" | .experimental_features = ["docker"]' \
+            "$SCENARIO_PATH" > "${SCENARIO_PATH}.tmp"
+          mv "${SCENARIO_PATH}.tmp" "$SCENARIO_PATH"
+          echo "Patched:"
+          jq '{manifest_version, experimental_features}' "$SCENARIO_PATH"
 
       - name: Generate provenance
         run: |

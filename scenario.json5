@@ -31,7 +31,6 @@
       manifest: "./manifests/purple-agent.json5",
       config: {
         model_name: "${config.coding_agent.model_name}",
-        use_gold_patches: "false",
         openai_api_key: "${config.coding_agent.openai_api_key}",
         anthropic_api_key: "${config.coding_agent.anthropic_api_key}",
         openrouter_api_key: "${config.coding_agent.openrouter_api_key}",
@@ -46,5 +45,6 @@
 
   exports: {
     a2a: "#green.a2a",
+    results: "#green.results",
   },
 }

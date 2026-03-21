@@ -97,14 +97,34 @@ jobs:
           echo "base=$base" >> "$GITHUB_OUTPUT"
           echo "Using scenario: $scenario"
 
-      - name: Extract assessment_config from green agent manifest
+      # HACK: Patch submission JSON to manifest v0.2.0 with experimental_features
+      # so amber compile doesn't reject child manifests that declare ["docker"].
+      # Remove once the agentbeats backend generates v0.2.0 submissions natively.
+      - name: Patch submission to manifest v0.2.0
+        shell: bash
+        env:
+          SCENARIO_PATH: ${{ steps.scenario.outputs.path }}
+        run: |
+          set -euo pipefail
+          if [[ "$SCENARIO_PATH" != *.json ]]; then
+            echo "Not a submission JSON ($SCENARIO_PATH); skipping patch"
+            exit 0
+          fi
+          echo "Patching $SCENARIO_PATH → manifest_version 0.2.0 + experimental_features [docker]"
+          jq '.manifest_version = "0.2.0" | .experimental_features = ["docker"]' \
+            "$SCENARIO_PATH" > "${SCENARIO_PATH}.tmp"
+          mv "${SCENARIO_PATH}.tmp" "$SCENARIO_PATH"
+          echo "Patched:"
+          jq '{manifest_version, experimental_features}' "$SCENARIO_PATH"
+
+      - name: Extract assessment_config
         id: assessment_config
         shell: bash
         run: |
           set -euo pipefail
-          # Resolve the green agent manifest path from the scenario.
-          # scenario.json5 references ./manifests/green-agent.json5 via
-          # components.green.manifest — extract it with a lightweight parse.
+          # Look for assessment_config in two places:
+          # 1) Submission JSONs: components.gateway.config.assessment_config
+          # 2) Local scenario.json5: green agent manifest metadata.assessment_config
           python3 << 'PYEOF'
           import json, re, os, pathlib, urllib.request
 
@@ -130,22 +150,33 @@ jobs:
                   text = pathlib.Path(path_or_url).read_text()
               return parse_json5(text)
 
-          # Load scenario to find green agent manifest ref (local path or URL)
           scenario = load_json5(scenario_path)
-          green_manifest_ref = scenario.get("components", {}).get("green", {}).get("manifest", "")
-          if not green_manifest_ref:
-              print("No green agent manifest found in scenario; using defaults")
-              config = {}
-          else:
-              # If it's a URL, fetch directly; otherwise resolve relative to scenario dir
-              if green_manifest_ref.startswith("http://") or green_manifest_ref.startswith("https://"):
-                  green_manifest_path = green_manifest_ref
-              else:
-                  scenario_dir = str(pathlib.Path(scenario_path).parent)
-                  green_manifest_path = str(pathlib.Path(scenario_dir, green_manifest_ref))
-              print(f"Green agent manifest: {green_manifest_path}")
-              manifest = load_json5(green_manifest_path)
-              config = manifest.get("metadata", {}).get("assessment_config", {})
+          config = {}
+
+          # 1) Submission JSONs: assessment_config lives in components.gateway.config
+          gateway_config = scenario.get("components", {}).get("gateway", {}).get("config", {})
+          if "assessment_config" in gateway_config:
+              config = gateway_config["assessment_config"]
+              print(f"Found assessment_config in gateway config")
+
+          # 2) Local scenario.json5: assessment_config lives in green agent manifest metadata
+          if not config:
+              green_manifest_ref = scenario.get("components", {}).get("green", {}).get("manifest", "")
+              if green_manifest_ref:
+                  if green_manifest_ref.startswith("http://") or green_manifest_ref.startswith("https://"):
+                      green_manifest_path = green_manifest_ref
+                  else:
+                      scenario_dir = str(pathlib.Path(scenario_path).parent)
+                      green_manifest_path = str(pathlib.Path(scenario_dir, green_manifest_ref))
+                  print(f"Green agent manifest: {green_manifest_path}")
+                  manifest = load_json5(green_manifest_path)
+                  config = manifest.get("metadata", {}).get("assessment_config", {})
+
+          if not config:
+              print("ERROR: No assessment_config found in scenario.")
+              print("The matrix workflow requires assessment_config (max_instances, batch_size, instance_ids)")
+              print("to be set in either components.gateway.config or green agent manifest metadata.")
+              raise SystemExit(1)
 
           print(f"assessment_config from manifest: {json.dumps(config, indent=2)}")
 
@@ -406,107 +437,101 @@ jobs:
             exit 1
           fi
 
-      # ── Create .env — uses repo/action secrets (like eval.yml) ───
+      # ── Create .env — secrets + batch instance IDs ─────────────────
       - name: Create .env with config and secrets
         working-directory: amber-out
         env:
           SECRETS_JSON: ${{ toJSON(secrets) }}
           MODEL_NAME: ${{ inputs.model_name }}
+          BATCH_INSTANCES: ${{ matrix.batch.instances }}
         run: |
+          set -euo pipefail
+          # Participant secrets
           echo "$SECRETS_JSON" | jq -r 'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_CODING_AGENT__\(.key)=\(.value)"' > .env
           if [[ -n "${MODEL_NAME:-}" ]]; then
             echo "AMBER_CONFIG_CODING_AGENT__MODEL_NAME=$MODEL_NAME" >> .env
           fi
+          # Batch instance IDs → green agent auto-start config
+          instance_ids=$(echo "$BATCH_INSTANCES" | python3 -c "import sys,json; print(','.join(json.load(sys.stdin)))")
+          echo "AMBER_CONFIG_GREEN__INSTANCE_IDS=${instance_ids}" >> .env
+          echo "Batch ${{ matrix.batch.id }}: ${instance_ids}"
 
-      # ── Start Amber scenario (stays up for entire batch) ─────────
-      - name: Start Amber scenario
-        working-directory: amber-out
+      # ── Run scenario with polling (same pattern as quick-submit-runner) ──
+      - name: Run scenario — ${{ matrix.batch.id }}
+        shell: bash
         run: |
-          docker compose -p "${AMBER_COMPOSE_PROJECT}" up -d
-          docker compose -p "${AMBER_COMPOSE_PROJECT}" logs -f &
+          set -euo pipefail
+          compose=(docker compose -f "${AMBER_COMPOSE_DIR}/compose.yaml" -p "${AMBER_COMPOSE_PROJECT}")
+          proxy_pid=""
+          logs_pid=""
+          cleanup() {
+            exit_code=$?
+            if [[ -n "${proxy_pid}" ]]; then
+              kill "${proxy_pid}" >/dev/null 2>&1 || true
+              wait "${proxy_pid}" >/dev/null 2>&1 || true
+            fi
+            if [[ -n "${logs_pid}" ]]; then
+              kill "${logs_pid}" >/dev/null 2>&1 || true
+              wait "${logs_pid}" >/dev/null 2>&1 || true
+            fi
+            if [[ ${exit_code} -ne 0 ]]; then
+              echo "Amber proxy log:" >&2
+              [[ -f amber-proxy.log ]] && cat amber-proxy.log >&2 || true
+              echo "Compose status:" >&2
+              "${compose[@]}" ps >&2 || true
+            fi
+            exit "${exit_code}"
+          }
+          trap cleanup EXIT
 
-      - name: Wait for agents
-        run: |
-          for i in $(seq 1 60); do
-            green=$(docker compose -f amber-out/compose.yaml -p "${AMBER_COMPOSE_PROJECT}" logs c2-green 2>&1 | grep -c "Uvicorn running" || true)
-            purple=$(docker compose -f amber-out/compose.yaml -p "${AMBER_COMPOSE_PROJECT}" logs c1-coding-agent 2>&1 | grep -c "Uvicorn running" || true)
-            if [ "$green" -ge 1 ] && [ "$purple" -ge 1 ]; then
-              echo "Both agents ready"
+          "${compose[@]}" up -d
+          "${compose[@]}" logs -f --no-color &
+          logs_pid=$!
+
+          # Export results — green agent auto-starts and serves results at /
+          amber proxy "${AMBER_COMPOSE_DIR}" \
+            --project-name "${AMBER_COMPOSE_PROJECT}" \
+            --export "results=127.0.0.1:${AMBER_PROXY_PORT}" > amber-proxy.log 2>&1 &
+          proxy_pid=$!
+
+          poll_url="http://127.0.0.1:${AMBER_PROXY_PORT}/"
+          echo "Polling ${poll_url} for batch ${{ matrix.batch.id }}..."
+          status=""
+          deadline=$((SECONDS + (60 * RESULTS_TIMEOUT_MINUTES)))
+          while (( SECONDS < deadline )); do
+            if ! kill -0 "${proxy_pid}" >/dev/null 2>&1; then
+              echo "amber proxy exited unexpectedly" >&2
+              exit 1
+            fi
+            response="$(curl -fsS "${poll_url}" || true)"
+            if [[ -z "${response}" ]]; then
+              sleep 5
+              continue
+            fi
+            status="$(jq -r '.status // empty' <<<"${response}")"
+            if [[ -z "${status}" ]]; then
+              echo "Unexpected results payload:" >&2
+              echo "${response}" >&2
+              sleep 5
+              continue
+            fi
+            if [[ "${status}" != "running" ]]; then
+              mkdir -p amber-out/output
+              jq . <<<"${response}" > amber-out/output/results.json
+              echo "Batch ${{ matrix.batch.id }} finished with status: ${status}"
               break
             fi
-            echo "Waiting... ($i/60)"
-            sleep 3
+            sleep 5
           done
-
-      - name: Start proxy
-        run: |
-          amber proxy amber-out \
-            --project-name "${AMBER_COMPOSE_PROJECT}" \
-            --export a2a=0.0.0.0:${AMBER_PROXY_PORT} &
-          sleep 3
-
-      # ── Install eval runner deps ─────────────────────────────────
-      - name: Install eval runner
-        run: pip install httpx
-
-      # ── Run batch ────────────────────────────────────────────────
-      - name: Run batch — ${{ matrix.batch.id }}
-        run: |
-          INSTANCES='${{ matrix.batch.instances }}'
-          echo "Batch: ${{ matrix.batch.id }}"
-          echo "Instances: $INSTANCES"
-          echo ""
-
-          mkdir -p amber-out/output/per-instance
-          BATCH_PASSED=0
-          BATCH_TOTAL=0
-          BATCH_ERRORS=""
-
-          for INSTANCE in $(echo "$INSTANCES" | python3 -c "import sys,json; [print(i) for i in json.load(sys.stdin)]"); do
-            echo ""
-            echo "=========================================="
-            echo "  Instance: $INSTANCE"
-            echo "=========================================="
-            START_TIME=$(date +%s)
-
-            EXIT_CODE=0
-            python3 eval_runner.py \
-              --endpoint http://127.0.0.1:${AMBER_PROXY_PORT} \
-              --instances "$INSTANCE" \
-              --output "amber-out/output/per-instance/${INSTANCE}.json" \
-              --timeout 1800 || EXIT_CODE=$?
-
-            END_TIME=$(date +%s)
-            ELAPSED=$((END_TIME - START_TIME))
-            echo ""
-            echo "=== $INSTANCE finished in ${ELAPSED}s ($((ELAPSED / 60))m $((ELAPSED % 60))s) ==="
-
-            if [ ! -f "amber-out/output/per-instance/${INSTANCE}.json" ]; then
-              echo "WARNING: No results file for $INSTANCE"
-              echo "{\"instance\": \"$INSTANCE\", \"error\": \"no results file\", \"exit_code\": $EXIT_CODE}" > "amber-out/output/per-instance/${INSTANCE}.json"
-            fi
-
-            # Clean up sweap evaluation images to reclaim disk
-            docker images --filter "reference=*/sweap-images:*" -q | xargs -r docker rmi -f 2>/dev/null || true
-            echo "Disk free: $(df -h / | tail -1 | awk '{print $4}')"
-
-            BATCH_TOTAL=$((BATCH_TOTAL + 1))
-            if [ $EXIT_CODE -eq 0 ]; then
-              BATCH_PASSED=$((BATCH_PASSED + 1))
-            else
-              BATCH_ERRORS="$BATCH_ERRORS $INSTANCE"
-            fi
-          done
-
-          echo ""
-          echo "=========================================="
-          echo "  Batch ${{ matrix.batch.id }} Summary"
-          echo "  Completed: $BATCH_TOTAL instances"
-          echo "  Passed: $BATCH_PASSED / $BATCH_TOTAL"
-          if [ -n "$BATCH_ERRORS" ]; then
-            echo "  Errors:$BATCH_ERRORS"
+          if [[ ! -f amber-out/output/results.json ]]; then
+            echo "Timed out waiting ${RESULTS_TIMEOUT_MINUTES} minutes for batch results" >&2
+            exit 1
           fi
-          echo "=========================================="
+          if [[ "${status}" != "completed" ]]; then
+            echo "Batch failed:" >&2
+            cat amber-out/output/results.json >&2
+            exit 1
+          fi
         timeout-minutes: 300
 
       # ── Cleanup ──────────────────────────────────────────────────
@@ -527,7 +552,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: qs-matrix-${{ matrix.batch.id }}
-          path: amber-out/output/per-instance/
+          path: amber-out/output/results.json
           retention-days: 30
 
   # ── Aggregate results across all batches ──────────────────────────
@@ -553,14 +578,18 @@ jobs:
           total_count = 0
           errors = []
 
-          for f in sorted(glob.glob("results/qs-matrix-batch-*/*.json")):
+          # Each batch uploads a single results.json with the green agent's
+          # run_batch output: {status, accuracy, passed, total, results: [...]}
+          for f in sorted(glob.glob("results/qs-matrix-batch-*/results.json")):
               with open(f) as fh:
                   data = json.load(fh)
 
-              if "error" in data and "results" not in data:
-                  all_results.append(data)
+              batch_name = os.path.basename(os.path.dirname(f))
+
+              if data.get("status") == "failed":
+                  all_results.append({"batch": batch_name, "error": data.get("error", "unknown")})
                   total_count += 1
-                  errors.append(data.get("instance", os.path.basename(f)))
+                  errors.append(batch_name)
                   continue
 
               for inst in data.get("results", []):
@@ -577,7 +606,7 @@ jobs:
           print()
           for r in all_results:
               status = "PASS" if r.get("passed") else "FAIL"
-              iid = r.get("instance_id", r.get("instance", "?"))
+              iid = r.get("instance_id", r.get("batch", "?"))
               err = f"  error: {r['error']}" if r.get("error") else ""
               print(f"  [{status}] {iid}{err}")
 

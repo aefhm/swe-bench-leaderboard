@@ -619,7 +619,7 @@ jobs:
               "total": total_count,
               "results": all_results,
           }
-          with open("aggregate-results.json", "w") as f:
+          with open("results.json", "w") as f:
               json.dump(summary, f, indent=2)
           PYEOF
 
@@ -627,7 +627,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: qs-matrix-aggregate
-          path: aggregate-results.json
+          path: results.json
           retention-days: 30
 
       # ── Commit results (optional, for submission PRs) ────────────
@@ -644,7 +644,7 @@ jobs:
       #     git config user.name "github-actions[bot]"
       #     git config user.email "github-actions[bot]@users.noreply.github.com"
       #     mkdir -p results
-      #     cp aggregate-results.json "results/${BASE}.json"
+      #     mv results.json "results/${BASE}.json"
       #     git add "results/${BASE}.json"
       #     git commit -m "[AgentBeats] Matrix scenario results" || echo "Nothing to commit"
       #     git push

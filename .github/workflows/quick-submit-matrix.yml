@@ -487,7 +487,8 @@ jobs:
           # Batch instance IDs → green agent config (instance_ids, max_instances)
           instance_ids=$(echo "$BATCH_INSTANCES" | python3 -c "import sys,json; print(','.join(json.load(sys.stdin)))")
           echo "AMBER_CONFIG_GREEN__instance_ids=${instance_ids}" >> .env
-          echo "AMBER_CONFIG_GREEN__max_instances=0" >> .env
+          instance_count=$(echo "$BATCH_INSTANCES" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")
+          echo "AMBER_CONFIG_GREEN__max_instances=${instance_count}" >> .env
           echo "Batch ${{ matrix.batch.id }}: ${instance_ids}"
 
       # ── Run scenario with polling (same pattern as quick-submit-runner) ──

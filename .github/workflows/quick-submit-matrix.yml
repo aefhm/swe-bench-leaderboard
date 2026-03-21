@@ -496,6 +496,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Export .env vars into the shell so HelperRunner containers see them
+          set -a; source "${AMBER_COMPOSE_DIR}/.env"; set +a
           compose=(docker compose -f "${AMBER_COMPOSE_DIR}/compose.yaml" -p "${AMBER_COMPOSE_PROJECT}")
           proxy_pid=""
           logs_pid=""

@@ -470,25 +470,24 @@ jobs:
             exit 1
           fi
 
-      # ── Create .env — secrets + batch instance IDs ─────────────────
-      - name: Create .env with config and secrets
-        working-directory: amber-out
+      # ── Export config to GITHUB_ENV — secrets + batch instance IDs ─────────────────
+      - name: Export AMBER_CONFIG vars
         env:
           SECRETS_JSON: ${{ toJSON(secrets) }}
           MODEL_NAME: ${{ inputs.model_name }}
           BATCH_INSTANCES: ${{ matrix.batch.instances }}
         run: |
           set -euo pipefail
-          # Participant secrets
-          echo "$SECRETS_JSON" | jq -r 'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_CODING_AGENT__\(.key | ascii_downcase)=\(.value | sub("\\s+$";""))"' > .env
+          # Participant secrets → GITHUB_ENV (same pattern as quick-submit-runner)
+          echo "$SECRETS_JSON" | jq -r 'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_CODING_AGENT__\(.key | ascii_downcase)=\(.value | sub("\\s+$";""))"' >> "${GITHUB_ENV}"
           if [[ -n "${MODEL_NAME:-}" ]]; then
-            echo "AMBER_CONFIG_CODING_AGENT__MODEL_NAME=$MODEL_NAME" >> .env
+            echo "AMBER_CONFIG_CODING_AGENT__MODEL_NAME=$MODEL_NAME" >> "${GITHUB_ENV}"
           fi
-          # Batch instance IDs → green agent config (instance_ids, max_instances)
+          # Batch instance IDs → green agent config
           instance_ids=$(echo "$BATCH_INSTANCES" | python3 -c "import sys,json; print(','.join(json.load(sys.stdin)))")
-          echo "AMBER_CONFIG_GREEN__instance_ids=${instance_ids}" >> .env
           instance_count=$(echo "$BATCH_INSTANCES" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")
-          echo "AMBER_CONFIG_GREEN__max_instances=${instance_count}" >> .env
+          echo "AMBER_CONFIG_GREEN__instance_ids=${instance_ids}" >> "${GITHUB_ENV}"
+          echo "AMBER_CONFIG_GREEN__max_instances=${instance_count}" >> "${GITHUB_ENV}"
           echo "Batch ${{ matrix.batch.id }}: ${instance_ids}"
 
       # ── Run scenario with polling (same pattern as quick-submit-runner) ──
@@ -496,8 +495,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Export .env vars into the shell so HelperRunner containers see them
-          set -a; source "${AMBER_COMPOSE_DIR}/.env"; set +a
           compose=(docker compose -f "${AMBER_COMPOSE_DIR}/compose.yaml" -p "${AMBER_COMPOSE_PROJECT}")
           proxy_pid=""
           logs_pid=""
@@ -674,19 +671,6 @@ jobs:
           participants=$(jq '.metadata.agentbeats_ids // {}' "${SCENARIO_PATH}" 2>/dev/null || echo '{}')
           jq --argjson participants "$participants" '. + {participants: $participants}' results.json > results-final.json
           mv results-final.json results.json
-
-      - name: Install amber CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker pull "${AMBER_IMAGE}"
-          cid="$(docker create "${AMBER_IMAGE}")"
-          cleanup() { docker rm "${cid}" >/dev/null 2>&1 || true; }
-          trap cleanup EXIT
-          install -d "${RUNNER_TEMP}/bin"
-          docker cp "${cid}:/amber" "${RUNNER_TEMP}/bin/amber"
-          chmod +x "${RUNNER_TEMP}/bin/amber"
-          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
 
       # HACK: Patch submission JSON to manifest v0.2.0 with experimental_features
       # so amber compile doesn't reject child manifests that declare ["docker"].

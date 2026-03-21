@@ -403,7 +403,22 @@ jobs:
           set -euo pipefail
           rm -rf "${AMBER_COMPOSE_DIR}"
           amber compile "${SCENARIO_PATH}" \
+            --output scenario-ir.json \
             --docker-compose "${AMBER_COMPOSE_DIR}"
+          if ! jq -e '.exports[] | select(.name == "results" and .capability.kind == "http")' scenario-ir.json > /dev/null; then
+            echo "Scenario must export an HTTP capability named 'results'" >&2
+            exit 1
+          fi
+          if jq -e '.. | objects | select(.kind? == "docker")' scenario-ir.json > /dev/null; then
+            if [[ ! -S /var/run/docker.sock ]]; then
+              echo "Scenario uses framework.docker but /var/run/docker.sock is unavailable" >&2
+              exit 1
+            fi
+            echo "Scenario uses framework.docker; exporting /var/run/docker.sock to Docker Compose"
+            echo "AMBER_DOCKER_SOCK=/var/run/docker.sock" >> "${GITHUB_ENV}"
+          else
+            echo "Scenario does not use framework.docker"
+          fi
 
       - name: Patch compose for direct Docker socket
         run: |
@@ -560,7 +575,16 @@ jobs:
     needs: [setup, eval]
     if: always()
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      AMBER_IMAGE: ghcr.io/rdi-foundation/amber-cli:v0.3
+      SCENARIO_PATH: ${{ needs.setup.outputs.scenario_path }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref }}
+
       - name: Download all results
         uses: actions/download-artifact@v8
         with:
@@ -623,28 +647,77 @@ jobs:
               json.dump(summary, f, indent=2)
           PYEOF
 
+      - name: Add participants to results
+        run: |
+          participants=$(jq '.metadata.agentbeats_ids // {}' "${SCENARIO_PATH}" 2>/dev/null || echo '{}')
+          jq --argjson participants "$participants" '. + {participants: $participants}' results.json > results-final.json
+          mv results-final.json results.json
+
+      - name: Install amber CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "${AMBER_IMAGE}"
+          cid="$(docker create "${AMBER_IMAGE}")"
+          cleanup() { docker rm "${cid}" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          install -d "${RUNNER_TEMP}/bin"
+          docker cp "${cid}:/amber" "${RUNNER_TEMP}/bin/amber"
+          chmod +x "${RUNNER_TEMP}/bin/amber"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+
+      - name: Generate provenance
+        run: |
+          set -euo pipefail
+          # Compile scenario to get manifest digests (image digests are not
+          # available here because Docker images ran on the eval runners).
+          amber compile "${SCENARIO_PATH}" --output scenario-ir.json || true
+          if [[ -f scenario-ir.json ]]; then
+            manifest_digests=$(jq '[.components[] | {(.moniker): .digest}] | add // {}' scenario-ir.json)
+          else
+            manifest_digests='{}'
+          fi
+          timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          jq -n \
+            --argjson manifest_digests "$manifest_digests" \
+            --arg timestamp "$timestamp" \
+            --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --arg ref "${{ github.ref }}" \
+            --arg sha "${{ github.sha }}" \
+            --arg repository_url "${{ github.server_url }}/${{ github.repository }}" \
+            --arg workflow_ref "${{ github.workflow_ref }}" \
+            --arg workflow_sha "${{ github.workflow_sha }}" \
+            '{
+              manifest_digests: $manifest_digests,
+              timestamp: $timestamp,
+              github_actions: {
+                run_url: $run_url,
+                ref: $ref,
+                sha: $sha,
+                repository_url: $repository_url,
+                workflow_ref: $workflow_ref,
+                workflow_sha: $workflow_sha
+              }
+            }' > provenance.json
+
       - name: Upload aggregate results
         uses: actions/upload-artifact@v7
         with:
           name: qs-matrix-aggregate
-          path: results.json
+          path: |
+            results.json
+            provenance.json
           retention-days: 30
 
-      # ── Commit results (optional, for submission PRs) ────────────
-      # Uncomment when ready to auto-commit results back to the PR branch.
-      #
-      # - uses: actions/checkout@v4
-      #   with:
-      #     ref: ${{ github.head_ref || github.ref }}
-      #
-      # - name: Commit results
-      #   env:
-      #     BASE: ${{ needs.setup.outputs.scenario_base }}
-      #   run: |
-      #     git config user.name "github-actions[bot]"
-      #     git config user.email "github-actions[bot]@users.noreply.github.com"
-      #     mkdir -p results
-      #     mv results.json "results/${BASE}.json"
-      #     git add "results/${BASE}.json"
-      #     git commit -m "[AgentBeats] Matrix scenario results" || echo "Nothing to commit"
-      #     git push
+      - name: Commit results
+        env:
+          BASE: ${{ needs.setup.outputs.scenario_base }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          mkdir -p results
+          mv results.json "results/${BASE}.json"
+          mv provenance.json "submissions/${BASE}-provenance.json"
+          git add "results/${BASE}.json" "submissions/${BASE}-provenance.json"
+          git commit -m "[AgentBeats] Matrix scenario results" || echo "Nothing to commit"
+          git push

@@ -479,15 +479,15 @@ jobs:
         run: |
           set -euo pipefail
           # Participant secrets → GITHUB_ENV (same pattern as quick-submit-runner)
-          echo "$SECRETS_JSON" | jq -r 'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_CODING_AGENT__\(.key | ascii_downcase)=\(.value | sub("\\s+$";""))"' >> "${GITHUB_ENV}"
+          echo "$SECRETS_JSON" | jq -r 'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_CODING_AGENT__\(.key | ascii_upcase)=\(.value | sub("\\s+$";""))"' >> "${GITHUB_ENV}"
           if [[ -n "${MODEL_NAME:-}" ]]; then
             echo "AMBER_CONFIG_CODING_AGENT__MODEL_NAME=$MODEL_NAME" >> "${GITHUB_ENV}"
           fi
           # Batch instance IDs → green agent config
           instance_ids=$(echo "$BATCH_INSTANCES" | python3 -c "import sys,json; print(','.join(json.load(sys.stdin)))")
           instance_count=$(echo "$BATCH_INSTANCES" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")
-          echo "AMBER_CONFIG_GREEN__instance_ids=${instance_ids}" >> "${GITHUB_ENV}"
-          echo "AMBER_CONFIG_GREEN__max_instances=${instance_count}" >> "${GITHUB_ENV}"
+          echo "AMBER_CONFIG_GREEN__INSTANCE_IDS=${instance_ids}" >> "${GITHUB_ENV}"
+          echo "AMBER_CONFIG_GREEN__MAX_INSTANCES=${instance_count}" >> "${GITHUB_ENV}"
           echo "Batch ${{ matrix.batch.id }}: ${instance_ids}"
 
       # ── Run scenario with polling (same pattern as quick-submit-runner) ──

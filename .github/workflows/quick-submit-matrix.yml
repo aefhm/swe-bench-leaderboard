@@ -72,6 +72,31 @@ jobs:
           echo "Patched:"
           jq '{manifest_version, experimental_features}' "$SCENARIO_PATH"
 
+      # HACK: Rewrite gateway.proxy binding so green talks directly to coding_agent.
+      # The gateway proxy endpoint doesn't serve /.well-known/agent-card.json,
+      # so A2A discovery fails with 404. Direct binding bypasses the proxy.
+      # Remove once the agentbeats backend generates correct bindings.
+      - name: Patch binding — bypass gateway proxy for A2A
+        shell: bash
+        env:
+          SCENARIO_PATH: ${{ steps.scenario.outputs.path }}
+        run: |
+          set -euo pipefail
+          if [[ "$SCENARIO_PATH" != *.json ]]; then
+            echo "Not a submission JSON ($SCENARIO_PATH); skipping patch"
+            exit 0
+          fi
+          if jq -e '.bindings[]? | select(.to == "#green.coding_agent" and .from == "#gateway.proxy")' "$SCENARIO_PATH" > /dev/null 2>&1; then
+            echo "Patching binding: #green.coding_agent ← #gateway.proxy → #coding_agent.a2a"
+            jq '(.bindings[] | select(.to == "#green.coding_agent" and .from == "#gateway.proxy")) |= {to: .to, from: "#coding_agent.a2a"}' \
+              "$SCENARIO_PATH" > "${SCENARIO_PATH}.tmp"
+            mv "${SCENARIO_PATH}.tmp" "$SCENARIO_PATH"
+            echo "Patched bindings:"
+            jq '.bindings' "$SCENARIO_PATH"
+          else
+            echo "No gateway.proxy binding found; skipping"
+          fi
+
       - name: Extract assessment_config
         id: assessment_config
         shell: bash
@@ -342,6 +367,31 @@ jobs:
           echo "Patched:"
           jq '{manifest_version, experimental_features}' "$SCENARIO_PATH"
 
+      # HACK: Rewrite gateway.proxy binding so green talks directly to coding_agent.
+      # The gateway proxy endpoint doesn't serve /.well-known/agent-card.json,
+      # so A2A discovery fails with 404. Direct binding bypasses the proxy.
+      # Remove once the agentbeats backend generates correct bindings.
+      - name: Patch binding — bypass gateway proxy for A2A
+        shell: bash
+        env:
+          SCENARIO_PATH: ${{ needs.setup.outputs.scenario_path }}
+        run: |
+          set -euo pipefail
+          if [[ "$SCENARIO_PATH" != *.json ]]; then
+            echo "Not a submission JSON ($SCENARIO_PATH); skipping patch"
+            exit 0
+          fi
+          if jq -e '.bindings[]? | select(.to == "#green.coding_agent" and .from == "#gateway.proxy")' "$SCENARIO_PATH" > /dev/null 2>&1; then
+            echo "Patching binding: #green.coding_agent ← #gateway.proxy → #coding_agent.a2a"
+            jq '(.bindings[] | select(.to == "#green.coding_agent" and .from == "#gateway.proxy")) |= {to: .to, from: "#coding_agent.a2a"}' \
+              "$SCENARIO_PATH" > "${SCENARIO_PATH}.tmp"
+            mv "${SCENARIO_PATH}.tmp" "$SCENARIO_PATH"
+            echo "Patched bindings:"
+            jq '.bindings' "$SCENARIO_PATH"
+          else
+            echo "No gateway.proxy binding found; skipping"
+          fi
+
       - name: Compile scenario
         shell: bash
         run: |
@@ -607,6 +657,23 @@ jobs:
           mv "${SCENARIO_PATH}.tmp" "$SCENARIO_PATH"
           echo "Patched:"
           jq '{manifest_version, experimental_features}' "$SCENARIO_PATH"
+
+      # HACK: Rewrite gateway.proxy binding so green talks directly to coding_agent.
+      - name: Patch binding — bypass gateway proxy for A2A
+        run: |
+          set -euo pipefail
+          if [[ "$SCENARIO_PATH" != *.json ]]; then
+            echo "Not a submission JSON ($SCENARIO_PATH); skipping patch"
+            exit 0
+          fi
+          if jq -e '.bindings[]? | select(.to == "#green.coding_agent" and .from == "#gateway.proxy")' "$SCENARIO_PATH" > /dev/null 2>&1; then
+            echo "Patching binding: #green.coding_agent ← #gateway.proxy → #coding_agent.a2a"
+            jq '(.bindings[] | select(.to == "#green.coding_agent" and .from == "#gateway.proxy")) |= {to: .to, from: "#coding_agent.a2a"}' \
+              "$SCENARIO_PATH" > "${SCENARIO_PATH}.tmp"
+            mv "${SCENARIO_PATH}.tmp" "$SCENARIO_PATH"
+          else
+            echo "No gateway.proxy binding found; skipping"
+          fi
 
       - name: Generate provenance
         run: |

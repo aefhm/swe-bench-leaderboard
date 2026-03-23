@@ -94,8 +94,8 @@ jobs:
       # ── Install amber CLI (used for compile + proxy) ─────────
       - name: Install amber CLI
         run: |
-          docker pull ghcr.io/rdi-foundation/amber-cli:main
-          cid="$(docker create ghcr.io/rdi-foundation/amber-cli:main)"
+          docker pull ghcr.io/rdi-foundation/amber-cli:v0.3
+          cid="$(docker create ghcr.io/rdi-foundation/amber-cli:v0.3)"
           docker cp "${cid}:/amber" /usr/local/bin/amber
           docker rm "${cid}"
           chmod +x /usr/local/bin/amber

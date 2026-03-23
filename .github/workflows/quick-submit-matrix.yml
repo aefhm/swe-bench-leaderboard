@@ -52,10 +52,10 @@ jobs:
           echo "path=$scenario" >> "$GITHUB_OUTPUT"
           echo "base=$base" >> "$GITHUB_OUTPUT"
 
-      # HACK: Patch submission JSON to manifest v0.2.0 with experimental_features
+      # HACK: Patch submission JSON to manifest v0.3.0 with experimental_features
       # so amber compile doesn't reject child manifests that declare ["docker"].
-      # Remove once the agentbeats backend generates v0.2.0 submissions natively.
-      - name: Patch submission to manifest v0.2.0
+      # Remove once the agentbeats backend generates v0.3.0 submissions natively.
+      - name: Patch submission to manifest v0.3.0
         shell: bash
         env:
           SCENARIO_PATH: ${{ steps.scenario.outputs.path }}
@@ -65,8 +65,8 @@ jobs:
             echo "Not a submission JSON ($SCENARIO_PATH); skipping patch"
             exit 0
           fi
-          echo "Patching $SCENARIO_PATH → manifest_version 0.2.0 + experimental_features [docker]"
-          jq '.manifest_version = "0.2.0" | .experimental_features = ["docker"]' \
+          echo "Patching $SCENARIO_PATH → manifest_version 0.3.0 + experimental_features [docker]"
+          jq '.manifest_version = "0.3.0" | .experimental_features = ["docker"]' \
             "$SCENARIO_PATH" > "${SCENARIO_PATH}.tmp"
           mv "${SCENARIO_PATH}.tmp" "$SCENARIO_PATH"
           echo "Patched:"
@@ -347,10 +347,10 @@ jobs:
           "${RUNNER_TEMP}/bin/amber" --help >/dev/null
 
       # ── Compile Amber scenario ───────────────────────────────────
-      # HACK: Patch submission JSON to manifest v0.2.0 with experimental_features
+      # HACK: Patch submission JSON to manifest v0.3.0 with experimental_features
       # so amber compile doesn't reject child manifests that declare ["docker"].
-      # Remove once the agentbeats backend generates v0.2.0 submissions natively.
-      - name: Patch submission to manifest v0.2.0
+      # Remove once the agentbeats backend generates v0.3.0 submissions natively.
+      - name: Patch submission to manifest v0.3.0
         shell: bash
         env:
           SCENARIO_PATH: ${{ needs.setup.outputs.scenario_path }}
@@ -360,8 +360,8 @@ jobs:
             echo "Not a submission JSON ($SCENARIO_PATH); skipping patch"
             exit 0
           fi
-          echo "Patching $SCENARIO_PATH → manifest_version 0.2.0 + experimental_features [docker]"
-          jq '.manifest_version = "0.2.0" | .experimental_features = ["docker"]' \
+          echo "Patching $SCENARIO_PATH → manifest_version 0.3.0 + experimental_features [docker]"
+          jq '.manifest_version = "0.3.0" | .experimental_features = ["docker"]' \
             "$SCENARIO_PATH" > "${SCENARIO_PATH}.tmp"
           mv "${SCENARIO_PATH}.tmp" "$SCENARIO_PATH"
           echo "Patched:"
@@ -409,50 +409,50 @@ jobs:
               echo "Scenario uses framework.docker but /var/run/docker.sock is unavailable" >&2
               exit 1
             fi
-            echo "Scenario uses framework.docker; exporting /var/run/docker.sock to Docker Compose"
-            echo "AMBER_DOCKER_SOCK=/var/run/docker.sock" >> "${GITHUB_ENV}"
+            echo "Scenario uses framework.docker — patching compose for direct socket mount"
+            echo "AMBER_USES_DOCKER=true" >> "${GITHUB_ENV}"
           else
             echo "Scenario does not use framework.docker"
           fi
 
-      # HACK: Mount Docker socket directly instead of using amber's proxy.
-      # Remove once amber supports direct socket passthrough natively.
-      - name: Patch compose for direct Docker socket
+      # HACK: Bypass amber's Docker gateway proxy and mount the socket directly.
+      # The gateway (amber-docker-gateway:v0.1) drops connections with
+      # "connection closed before message completed", causing docker run to
+      # fail with exit 125 inside containers.
+      # Remove once the gateway proxy handles Docker API calls reliably.
+      - name: Patch compose — direct Docker socket mount
+        if: env.AMBER_USES_DOCKER == 'true'
         run: |
           python3 - <<'PYTHON'
-          import re, yaml
+          import re
 
           compose_path = "amber-compose/compose.yaml"
           with open(compose_path) as f:
-              data = yaml.safe_load(f)
-
-          # Find services that use amber-helper
-          services = [
-              name for name, svc in (data.get("services") or {}).items()
-              if any("amber-helper" in str(e) for e in (svc.get("entrypoint") or []))
-          ]
-
-          with open(compose_path) as f:
               content = f.read()
 
+          # 1. Strip AMBER_DOCKER_MOUNT_PROXY_SPEC_B64 so amber-helper doesn't
+          #    create a proxy socket that conflicts with the real one.
           content = re.sub(r'\n\s*- AMBER_DOCKER_MOUNT_PROXY_SPEC_B64=[^\n]+', '', content)
 
-          patched = []
-          for service in services:
-              # Mount Docker socket
-              vol_pattern = rf'(  {service}:.*?volumes:\n\s*- amber-helper-bin:/amber/bin:ro)'
-              if re.search(vol_pattern, content, flags=re.DOTALL):
-                  content = re.sub(vol_pattern, r'\1\n    - /var/run/docker.sock:/var/run/docker.sock', content, flags=re.DOTALL)
-                  patched.append(service)
-              # Grant privileged mode for full Docker access
-              svc_pattern = rf'(  {service}:\n    image: [^\n]+\n)'
-              if re.search(svc_pattern, content):
-                  content = re.sub(svc_pattern, r'\1    privileged: true\n', content)
+          # 2. Mount the host Docker socket directly into every service that
+          #    used the proxy spec (they have amber-helper-bin volumes).
+          #    Insert the socket volume right after the amber-helper-bin line.
+          content = re.sub(
+              r'(- amber-helper-bin:/amber/bin:ro)',
+              r'\1\n    - /var/run/docker.sock:/var/run/docker.sock',
+              content,
+          )
 
           with open(compose_path, "w") as f:
               f.write(content)
-          print(f"Patched Docker socket into: {', '.join(patched) or 'none'}")
+
+          mounts = content.count('/var/run/docker.sock:/var/run/docker.sock')
+          print(f"Direct Docker socket mounted into {mounts} service(s)")
           PYTHON
+
+      - name: Fix Docker socket permissions
+        if: env.AMBER_USES_DOCKER == 'true'
+        run: sudo chmod 666 /var/run/docker.sock
 
       - name: Verify HelperRunner pattern
         run: |
@@ -462,9 +462,6 @@ jobs:
             echo "✗ Compose uses Resolved pattern — secrets won't flow at runtime"
             exit 1
           fi
-
-      - name: Fix Docker socket permissions
-        run: sudo chmod 666 /var/run/docker.sock
 
       # ── Export config to GITHUB_ENV — secrets + batch config ─────────────────
       - name: Export AMBER_CONFIG vars
@@ -641,18 +638,18 @@ jobs:
           jq --argjson participants "$participants" '. + {participants: $participants}' results.json > results-final.json
           mv results-final.json results.json
 
-      # HACK: Patch submission JSON to manifest v0.2.0 with experimental_features
+      # HACK: Patch submission JSON to manifest v0.3.0 with experimental_features
       # so amber compile doesn't reject child manifests that declare ["docker"].
-      # Remove once the agentbeats backend generates v0.2.0 submissions natively.
-      - name: Patch submission to manifest v0.2.0
+      # Remove once the agentbeats backend generates v0.3.0 submissions natively.
+      - name: Patch submission to manifest v0.3.0
         run: |
           set -euo pipefail
           if [[ "$SCENARIO_PATH" != *.json ]]; then
             echo "Not a submission JSON ($SCENARIO_PATH); skipping patch"
             exit 0
           fi
-          echo "Patching $SCENARIO_PATH → manifest_version 0.2.0 + experimental_features [docker]"
-          jq '.manifest_version = "0.2.0" | .experimental_features = ["docker"]' \
+          echo "Patching $SCENARIO_PATH → manifest_version 0.3.0 + experimental_features [docker]"
+          jq '.manifest_version = "0.3.0" | .experimental_features = ["docker"]' \
             "$SCENARIO_PATH" > "${SCENARIO_PATH}.tmp"
           mv "${SCENARIO_PATH}.tmp" "$SCENARIO_PATH"
           echo "Patched:"

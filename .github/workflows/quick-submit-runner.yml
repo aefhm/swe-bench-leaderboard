@@ -188,26 +188,6 @@ jobs:
           echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
           "${RUNNER_TEMP}/bin/amber" --help >/dev/null
 
-      # HACK: Patch submission JSON to manifest v0.2.0 with experimental_features
-      # so amber compile doesn't reject child manifests that declare ["docker"].
-      # Remove once the agentbeats backend generates v0.2.0 submissions natively.
-      - name: Patch submission to manifest v0.2.0
-        shell: bash
-        env:
-          SCENARIO_PATH: ${{ steps.scenario.outputs.path }}
-        run: |
-          set -euo pipefail
-          if [[ "$SCENARIO_PATH" != *.json ]]; then
-            echo "Not a submission JSON ($SCENARIO_PATH); skipping patch"
-            exit 0
-          fi
-          echo "Patching $SCENARIO_PATH → manifest_version 0.2.0 + experimental_features [docker]"
-          jq '.manifest_version = "0.2.0" | .experimental_features = ["docker"]' \
-            "$SCENARIO_PATH" > "${SCENARIO_PATH}.tmp"
-          mv "${SCENARIO_PATH}.tmp" "$SCENARIO_PATH"
-          echo "Patched:"
-          jq '{manifest_version, experimental_features}' "$SCENARIO_PATH"
-
       - name: Compile scenario
         shell: bash
         run: |

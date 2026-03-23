@@ -7,17 +7,13 @@ on:
         description: "LLM model name for litellm (e.g., openrouter/deepseek/deepseek-v3.2, anthropic/claude-sonnet-4-5-20250929)"
         default: ""
         type: string
-      max_instances:
-        description: "Instances to evaluate (0 = all 731)"
-        default: "3"
-        type: string
       instance_ids:
         description: "Comma-separated instance IDs to evaluate (empty = all)"
         default: ""
         type: string
-      batch_size:
-        description: "Instances per parallel runner"
-        default: "37"
+      max_runners:
+        description: "Maximum number of parallel runners"
+        default: "20"
         type: string
 
 jobs:
@@ -33,10 +29,9 @@ jobs:
         id: parse
         run: |
           python3 << 'PYEOF'
-          import json, os
+          import json, os, math
 
-          MAX = int("${{ inputs.max_instances || '0' }}")
-          BATCH_SIZE = int("${{ inputs.batch_size || '37' }}")
+          MAX_RUNNERS = int("${{ inputs.max_runners || '20' }}")
           INSTANCE_IDS = "${{ inputs.instance_ids || '' }}".strip()
 
           if INSTANCE_IDS:
@@ -45,19 +40,19 @@ jobs:
               with open("data/instances.jsonl") as f:
                   all_inst = [json.loads(line) for line in f if line.strip()]
               instances = [i["short_id"] for i in all_inst if "short_id" in i]
-              if MAX > 0:
-                  instances = instances[:MAX]
 
+          batch_size = math.ceil(len(instances) / MAX_RUNNERS) if MAX_RUNNERS > 0 else len(instances)
           batches = []
-          for i in range(0, len(instances), BATCH_SIZE):
-              batch = instances[i:i + BATCH_SIZE]
+          for i in range(0, len(instances), batch_size):
+              batch = instances[i:i + batch_size]
               batches.append({
-                  "id": f"batch-{i // BATCH_SIZE:03d}",
+                  "id": f"batch-{i // batch_size:03d}",
                   "instances": json.dumps(batch),
               })
 
           print(f"Total instances: {len(instances)}")
-          print(f"Batch size: {BATCH_SIZE}")
+          print(f"Max runners: {MAX_RUNNERS}")
+          print(f"Batch size (derived): {batch_size}")
           print(f"Total batches: {len(batches)}")
           for b in batches:
               print(f"  {b['id']}: {len(json.loads(b['instances']))} instances")
@@ -162,9 +157,7 @@ jobs:
           fi
           # Batch instance IDs → green agent config
           instance_ids=$(echo "$BATCH_INSTANCES" | python3 -c "import sys,json; print(','.join(json.load(sys.stdin)))")
-          instance_count=$(echo "$BATCH_INSTANCES" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")
           echo "AMBER_CONFIG_GREEN__INSTANCE_IDS=${instance_ids}" >> "${GITHUB_ENV}"
-          echo "AMBER_CONFIG_GREEN__MAX_INSTANCES=${instance_count}" >> "${GITHUB_ENV}"
           echo "Batch ${{ matrix.batch.id }}: ${instance_ids}"
 
       # ── Run scenario with polling ───────────────────────────────

@@ -18,17 +18,13 @@ on:
         description: "Submission UUID (if not using a PR branch)"
         default: ""
         type: string
-      max_instances:
-        description: "Instances to evaluate (0 = all)"
-        default: "3"
-        type: string
       instance_ids:
         description: "Comma-separated instance IDs (empty = all)"
         default: ""
         type: string
-      batch_size:
-        description: "Instances per parallel runner"
-        default: "37"
+      max_runners:
+        description: "Maximum number of parallel runners"
+        default: "20"
         type: string
       model_name:
         description: "LLM model name for litellm"
@@ -174,7 +170,7 @@ jobs:
 
           if not config:
               print("ERROR: No assessment_config found in scenario.")
-              print("The matrix workflow requires assessment_config (max_instances, batch_size, instance_ids)")
+              print("The matrix workflow requires assessment_config (max_runners, instance_ids)")
               print("to be set in either components.gateway.config or green agent manifest metadata.")
               raise SystemExit(1)
 
@@ -182,8 +178,7 @@ jobs:
 
           # Write each field as a step output
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write(f"max_instances={config.get('max_instances', 0)}\n")
-              out.write(f"batch_size={config.get('batch_size', 37)}\n")
+              out.write(f"max_runners={config.get('max_runners', 20)}\n")
               ids = config.get("instance_ids", [])
               out.write(f"instance_ids={','.join(ids) if ids else ''}\n")
           PYEOF
@@ -192,12 +187,11 @@ jobs:
         id: parse
         env:
           # workflow_dispatch inputs override manifest values; manifest is the default
-          MANIFEST_MAX: ${{ steps.assessment_config.outputs.max_instances }}
-          MANIFEST_BATCH_SIZE: ${{ steps.assessment_config.outputs.batch_size }}
+          MANIFEST_MAX_RUNNERS: ${{ steps.assessment_config.outputs.max_runners }}
           MANIFEST_INSTANCE_IDS: ${{ steps.assessment_config.outputs.instance_ids }}
         run: |
           python3 << 'PYEOF'
-          import json, os
+          import json, os, math
 
           # Precedence: workflow_dispatch input > manifest assessment_config > hardcoded default
           def resolve(input_val, manifest_val, default):
@@ -207,23 +201,19 @@ jobs:
                       return v
               return default
 
-          input_max = "${{ inputs.max_instances || '' }}".strip()
-          input_batch = "${{ inputs.batch_size || '' }}".strip()
+          input_runners = "${{ inputs.max_runners || '' }}".strip()
           input_ids = "${{ inputs.instance_ids || '' }}".strip()
 
-          manifest_max = os.environ.get("MANIFEST_MAX", "").strip()
-          manifest_batch = os.environ.get("MANIFEST_BATCH_SIZE", "").strip()
+          manifest_runners = os.environ.get("MANIFEST_MAX_RUNNERS", "").strip()
           manifest_ids = os.environ.get("MANIFEST_INSTANCE_IDS", "").strip()
 
-          MAX = int(resolve(input_max, manifest_max, "0"))
-          BATCH_SIZE = int(resolve(input_batch, manifest_batch, "37"))
+          MAX_RUNNERS = int(resolve(input_runners, manifest_runners, "20"))
 
           # For instance_ids, non-empty input wins, then manifest, then empty (= all)
           INSTANCE_IDS = input_ids or manifest_ids
 
           print(f"Config resolution:")
-          print(f"  max_instances: {MAX}  (input={input_max!r}, manifest={manifest_max!r})")
-          print(f"  batch_size:    {BATCH_SIZE}  (input={input_batch!r}, manifest={manifest_batch!r})")
+          print(f"  max_runners:   {MAX_RUNNERS}  (input={input_runners!r}, manifest={manifest_runners!r})")
           print(f"  instance_ids:  {INSTANCE_IDS!r}  (input={input_ids!r}, manifest={manifest_ids!r})")
 
           if INSTANCE_IDS:
@@ -232,19 +222,19 @@ jobs:
               with open("data/instances.jsonl") as f:
                   all_inst = [json.loads(line) for line in f if line.strip()]
               instances = [i["short_id"] for i in all_inst if "short_id" in i]
-              if MAX > 0:
-                  instances = instances[:MAX]
 
+          batch_size = math.ceil(len(instances) / MAX_RUNNERS) if MAX_RUNNERS > 0 else len(instances)
           batches = []
-          for i in range(0, len(instances), BATCH_SIZE):
-              batch = instances[i:i + BATCH_SIZE]
+          for i in range(0, len(instances), batch_size):
+              batch = instances[i:i + batch_size]
               batches.append({
-                  "id": f"batch-{i // BATCH_SIZE:03d}",
+                  "id": f"batch-{i // batch_size:03d}",
                   "instances": json.dumps(batch),
               })
 
           print(f"\nTotal instances: {len(instances)}")
-          print(f"Batch size: {BATCH_SIZE}")
+          print(f"Max runners: {MAX_RUNNERS}")
+          print(f"Batch size (derived): {batch_size}")
           print(f"Total batches: {len(batches)}")
           for b in batches:
               print(f"  {b['id']}: {len(json.loads(b['instances']))} instances")
@@ -485,9 +475,7 @@ jobs:
           fi
           # Batch instance IDs → green agent config
           instance_ids=$(echo "$BATCH_INSTANCES" | python3 -c "import sys,json; print(','.join(json.load(sys.stdin)))")
-          instance_count=$(echo "$BATCH_INSTANCES" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")
           echo "AMBER_CONFIG_GREEN__INSTANCE_IDS=${instance_ids}" >> "${GITHUB_ENV}"
-          echo "AMBER_CONFIG_GREEN__MAX_INSTANCES=${instance_count}" >> "${GITHUB_ENV}"
 
       # ── Run scenario with polling (same pattern as quick-submit-runner) ──
       - name: Run scenario — ${{ matrix.batch.id }}

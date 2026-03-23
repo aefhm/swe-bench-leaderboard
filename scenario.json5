@@ -22,6 +22,8 @@
         type: "object",
         properties: {
           instance_ids: { type: "string" },
+          batch_index: { type: "string" },
+          total_batches: { type: "string" },
         },
         additionalProperties: false,
       },
@@ -35,6 +37,8 @@
       manifest: "./manifests/green-agent.json5",
       config: {
         instance_ids: "${config.green.instance_ids}",
+        batch_index: "${config.green.batch_index}",
+        total_batches: "${config.green.total_batches}",
       },
     },
     coding_agent: {

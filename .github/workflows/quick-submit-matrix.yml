@@ -401,24 +401,44 @@ jobs:
       - name: Patch compose for direct Docker socket
         run: |
           python3 - <<'PYTHON'
-          import re
+          import re, yaml
 
-          with open("amber-compose/compose.yaml") as f:
+          compose_path = "amber-compose/compose.yaml"
+          with open(compose_path) as f:
+              data = yaml.safe_load(f)
+
+          # Find service names that use amber-helper (they need the Docker socket)
+          services = []
+          for name, svc in (data.get("services") or {}).items():
+              ep = svc.get("entrypoint") or []
+              if any("amber-helper" in str(e) for e in ep):
+                  services.append(name)
+          print(f"Services using amber-helper: {services}")
+
+          # Now do text-level patching (preserves YAML formatting)
+          with open(compose_path) as f:
               content = f.read()
 
+          # Remove amber's own Docker-mount-proxy env var (we mount the real socket)
           content = re.sub(
               r'\n\s*- AMBER_DOCKER_MOUNT_PROXY_SPEC_B64=[^\n]+',
               '',
               content,
           )
 
-          for service in ['c1-coding-agent', 'c2-green']:
+          # Add Docker socket mount to each amber-helper service
+          patched = []
+          for service in services:
               pattern = rf'(  {service}:.*?volumes:\n\s*- amber-helper-bin:/amber/bin:ro)'
-              replacement = r'\1\n    - /var/run/docker.sock:/var/run/docker.sock'
-              content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+              if re.search(pattern, content, flags=re.DOTALL):
+                  replacement = r'\1\n    - /var/run/docker.sock:/var/run/docker.sock'
+                  content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+                  patched.append(service)
 
-          with open("amber-compose/compose.yaml", "w") as f:
+          with open(compose_path, "w") as f:
               f.write(content)
+
+          print(f"Patched Docker socket into: {', '.join(patched) or 'none'}")
           PYTHON
 
       - name: Verify HelperRunner pattern
@@ -541,12 +561,11 @@ jobs:
       - name: Show container logs
         if: always()
         run: |
-          echo "=== Coding Agent (last 80) ==="
-          docker compose -f amber-compose/compose.yaml -p "${AMBER_COMPOSE_PROJECT}" logs c1-coding-agent 2>&1 | tail -80 || true
-          echo "=== Green Agent (last 80) ==="
-          docker compose -f amber-compose/compose.yaml -p "${AMBER_COMPOSE_PROJECT}" logs c2-green 2>&1 | tail -80 || true
-          echo "=== Docker Gateway (last 30) ==="
-          docker compose -f amber-compose/compose.yaml -p "${AMBER_COMPOSE_PROJECT}" logs c3-amber-internal-framework-docker-gateway 2>&1 | tail -30 || true
+          compose=(docker compose -f amber-compose/compose.yaml -p "${AMBER_COMPOSE_PROJECT}")
+          for svc in $("${compose[@]}" ps --services 2>/dev/null || true); do
+            echo "=== ${svc} (last 80) ==="
+            "${compose[@]}" logs "${svc}" 2>&1 | tail -80 || true
+          done
 
       - name: Stop scenario
         if: always()

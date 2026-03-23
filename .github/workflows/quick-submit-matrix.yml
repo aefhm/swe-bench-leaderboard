@@ -133,9 +133,16 @@ jobs:
           print(f"assessment_config: {json.dumps(config, indent=2) if config else '{}'}")
 
           # Write step outputs (defaults: max_runners=1, instance_ids="")
+          # instance_ids in assessment_config is an array of strings → join to CSV
+          raw_ids = config.get("instance_ids", [])
+          if isinstance(raw_ids, list):
+              instance_ids_csv = ",".join(str(i) for i in raw_ids if str(i).strip())
+          else:
+              instance_ids_csv = str(raw_ids)  # fallback if already a string
+
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               out.write(f"max_runners={config.get('max_runners', 1)}\n")
-              out.write(f"instance_ids={config.get('instance_ids', '')}\n")
+              out.write(f"instance_ids={instance_ids_csv}\n")
           PYEOF
 
       - name: Parse instances and chunk into batches

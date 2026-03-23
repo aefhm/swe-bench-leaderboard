@@ -34,6 +34,13 @@ jobs:
           MAX_RUNNERS = int("${{ inputs.max_runners || '20' }}")
           INSTANCE_IDS = "${{ inputs.instance_ids || '' }}".strip()
 
+          # Cap runners to number of explicit instance IDs
+          if INSTANCE_IDS:
+              num_ids = len([s.strip() for s in INSTANCE_IDS.split(",") if s.strip()])
+              if num_ids < MAX_RUNNERS:
+                  print(f"Capping max_runners from {MAX_RUNNERS} to {num_ids} (only {num_ids} instance IDs)")
+                  MAX_RUNNERS = num_ids
+
           batches = [
               {"id": f"batch-{i:03d}", "index": i, "total": MAX_RUNNERS}
               for i in range(MAX_RUNNERS)

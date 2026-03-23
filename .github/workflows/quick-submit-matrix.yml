@@ -211,6 +211,14 @@ jobs:
           print(f"  max_runners:   {MAX_RUNNERS}  (input={input_runners!r}, manifest={manifest_runners!r})")
           print(f"  instance_ids:  {INSTANCE_IDS!r}  (input={input_ids!r}, manifest={manifest_ids!r})")
 
+          # Cap runners to number of explicit instance IDs (no point running
+          # more workers than there are instances to process)
+          if INSTANCE_IDS:
+              num_ids = len([s.strip() for s in INSTANCE_IDS.split(",") if s.strip()])
+              if num_ids < MAX_RUNNERS:
+                  print(f"  Capping max_runners from {MAX_RUNNERS} to {num_ids} (only {num_ids} instance IDs)")
+                  MAX_RUNNERS = num_ids
+
           # Generate batch indices — the green agent handles its own instance slicing
           batches = [
               {"id": f"batch-{i:03d}", "index": i, "total": MAX_RUNNERS}

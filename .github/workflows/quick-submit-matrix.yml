@@ -132,27 +132,43 @@ jobs:
 
           print(f"assessment_config: {json.dumps(config, indent=2) if config else '{}'}")
 
-          # Write max_runners as step output (default 1 = single runner)
+          # Write step outputs (defaults: max_runners=1, instance_ids="")
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               out.write(f"max_runners={config.get('max_runners', 1)}\n")
+              out.write(f"instance_ids={config.get('instance_ids', '')}\n")
           PYEOF
 
       - name: Parse instances and chunk into batches
         id: parse
         env:
           MANIFEST_MAX_RUNNERS: ${{ steps.assessment_config.outputs.max_runners }}
+          MANIFEST_INSTANCE_IDS: ${{ steps.assessment_config.outputs.instance_ids }}
         run: |
           python3 << 'PYEOF'
           import json, os
 
           MAX_RUNNERS = int(os.environ.get("MANIFEST_MAX_RUNNERS", "").strip() or "1")
-          print(f"Config: max_runners={MAX_RUNNERS}")
+          INSTANCE_IDS = os.environ.get("MANIFEST_INSTANCE_IDS", "").strip()
+
+          # Cap runners to number of explicit instance IDs
+          if INSTANCE_IDS:
+              num_ids = len([s.strip() for s in INSTANCE_IDS.split(",") if s.strip()])
+              if num_ids < MAX_RUNNERS:
+                  print(f"Capping max_runners from {MAX_RUNNERS} to {num_ids} (only {num_ids} instance IDs)")
+                  MAX_RUNNERS = num_ids
 
           batches = [
               {"id": f"batch-{i:03d}", "index": i, "total": MAX_RUNNERS}
               for i in range(MAX_RUNNERS)
           ]
 
+          # Pass instance_ids through if explicitly set (optional override)
+          if INSTANCE_IDS:
+              for b in batches:
+                  b["instance_ids"] = INSTANCE_IDS
+
+          print(f"Config: max_runners={MAX_RUNNERS}")
+          print(f"Instance IDs override: {INSTANCE_IDS[:80] + '...' if len(INSTANCE_IDS) > 80 else INSTANCE_IDS or 'none'}")
           print(f"Total batches: {len(batches)}")
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
@@ -396,6 +412,11 @@ jobs:
           # Batch slicing config → green agent
           echo "AMBER_CONFIG_GREEN__BATCH_INDEX=${{ matrix.batch.index }}" >> "${GITHUB_ENV}"
           echo "AMBER_CONFIG_GREEN__TOTAL_BATCHES=${{ matrix.batch.total }}" >> "${GITHUB_ENV}"
+          # Optional instance_ids override
+          instance_ids="${{ matrix.batch.instance_ids }}"
+          if [[ -n "$instance_ids" ]]; then
+            echo "AMBER_CONFIG_GREEN__INSTANCE_IDS=${instance_ids}" >> "${GITHUB_ENV}"
+          fi
           echo "Batch ${{ matrix.batch.id }}: index=${{ matrix.batch.index }}/${{ matrix.batch.total }}"
 
       # ── Verify env vars are flowing ──

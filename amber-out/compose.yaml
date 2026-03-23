@@ -1,0 +1,372 @@
+volumes:
+  amber-helper-bin: {}
+  amber-router-control: {}
+  amber-router-mesh: {}
+  c1-coding-agent-net-mesh: {}
+  c2-green-net-mesh: {}
+  c3-amber-internal-framework-docker-gateway-net-mesh: {}
+services:
+  amber-init:
+    image: ghcr.io/rdi-foundation/amber-helper:v0.2
+    entrypoint:
+    - /amber-helper
+    - install
+    - /amber/bin/amber-helper
+    volumes:
+    - amber-helper-bin:/amber/bin
+    restart: no
+  amber-otelcol:
+    image: ${AMBER_OTELCOL_IMAGE:-otel/opentelemetry-collector-contrib:0.143.0}
+    user: 0:0
+    networks:
+      amber_mesh: {}
+    command:
+    - --config=/etc/otelcol/config.yaml
+    environment:
+    - AMBER_SCENARIO_RUN_ID=${COMPOSE_PROJECT_NAME:-default}
+    - AMBER_OTEL_UPSTREAM_OTLP_HTTP_ENDPOINT=${AMBER_OTEL_UPSTREAM_OTLP_HTTP_ENDPOINT:-http://host.docker.internal:18890}
+    extra_hosts:
+    - host.docker.internal:host-gateway
+    volumes:
+    - ${AMBER_DOCKER_CONTAINER_LOGS_DIR:-/var/lib/docker/containers}:/var/lib/docker/containers:ro
+    configs:
+    - source: amber-otelcol-config
+      target: /etc/otelcol/config.yaml
+  amber-provisioner:
+    image: ghcr.io/rdi-foundation/amber-provisioner:v0.1
+    user: 0:0
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    environment:
+    - AMBER_MESH_PROVISION_PLAN_PATH=/amber/plan/mesh-provision-plan.json
+    volumes:
+    - c1-coding-agent-net-mesh:/amber/provision/c1-coding-agent-net
+    - c2-green-net-mesh:/amber/provision/c2-green-net
+    - c3-amber-internal-framework-docker-gateway-net-mesh:/amber/provision/c3-amber-internal-framework-docker-gateway-net
+    - amber-router-mesh:/amber/provision/amber-router
+    configs:
+    - source: amber-mesh-provision-plan
+      target: /amber/plan/mesh-provision-plan.json
+    restart: no
+  amber-router:
+    image: ghcr.io/rdi-foundation/amber-router:v0.1
+    networks:
+      amber_mesh: {}
+    environment:
+    - AMBER_ROUTER_CONFIG_PATH=/amber/mesh/mesh-config.json
+    - AMBER_ROUTER_IDENTITY_PATH=/amber/mesh/mesh-identity.json
+    - AMBER_ROUTER_CONTROL_SOCKET_PATH=/amber/control/router-control.sock
+    - AMBER_SCENARIO_RUN_ID=${COMPOSE_PROJECT_NAME:-default}
+    - OTEL_TRACES_SAMPLER=always_on
+    - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+    - OTEL_EXPORTER_OTLP_ENDPOINT=http://amber-otelcol:4318
+    labels:
+      amber.exports: '{"a2a":{"component":"/green","provide":"a2a","protocol":"http","router_mesh_port":24000},"results":{"component":"/green","provide":"results","protocol":"http","router_mesh_port":24000}}'
+    ports:
+    - 127.0.0.1::24000
+    extra_hosts:
+    - host.docker.internal:host-gateway
+    volumes:
+    - amber-router-mesh:/amber/mesh:ro
+    - amber-router-control:/amber/control
+    depends_on:
+      amber-provisioner:
+        condition: service_completed_successfully
+      amber-router-control-init:
+        condition: service_completed_successfully
+  amber-router-control-init:
+    image: busybox:1.36.1
+    user: 0:0
+    command:
+    - sh
+    - -lc
+    - mkdir -p /amber/control && chown 65532:65532 /amber/control && chmod 0700 /amber/control
+    volumes:
+    - amber-router-control:/amber/control
+    restart: no
+  c1-coding-agent:
+    image: ghcr.io/aefhm/swe-bench-purple-agent:latest
+    network_mode: service:c1-coding-agent-net
+    entrypoint:
+    - /amber/bin/amber-helper
+    - run
+    environment:
+    - AMBER_CONFIG_CODING_AGENT__ANTHROPIC_API_KEY
+    - AMBER_CONFIG_CODING_AGENT__GEMINI_API_KEY
+    - AMBER_CONFIG_CODING_AGENT__MODEL_NAME
+    - AMBER_CONFIG_CODING_AGENT__OPENAI_API_KEY
+    - AMBER_CONFIG_CODING_AGENT__OPENROUTER_API_KEY
+    - AMBER_ROOT_CONFIG_SCHEMA_B64=eyJhZGRpdGlvbmFsUHJvcGVydGllcyI6ZmFsc2UsInByb3BlcnRpZXMiOnsiY29kaW5nX2FnZW50Ijp7ImFkZGl0aW9uYWxQcm9wZXJ0aWVzIjpmYWxzZSwicHJvcGVydGllcyI6eyJhbnRocm9waWNfYXBpX2tleSI6eyJ0eXBlIjoic3RyaW5nIn0sImdlbWluaV9hcGlfa2V5Ijp7InR5cGUiOiJzdHJpbmcifSwibW9kZWxfbmFtZSI6eyJ0eXBlIjoic3RyaW5nIn0sIm9wZW5haV9hcGlfa2V5Ijp7InR5cGUiOiJzdHJpbmcifSwib3BlbnJvdXRlcl9hcGlfa2V5Ijp7InR5cGUiOiJzdHJpbmcifX0sInR5cGUiOiJvYmplY3QifX0sInJlcXVpcmVkIjpbImNvZGluZ19hZ2VudCJdLCJ0eXBlIjoib2JqZWN0In0=
+    - AMBER_COMPONENT_CONFIG_SCHEMA_B64=eyJhZGRpdGlvbmFsUHJvcGVydGllcyI6ZmFsc2UsInByb3BlcnRpZXMiOnsiYW50aHJvcGljX2FwaV9rZXkiOnsic2VjcmV0Ijp0cnVlLCJ0eXBlIjoic3RyaW5nIn0sImdlbWluaV9hcGlfa2V5Ijp7InNlY3JldCI6dHJ1ZSwidHlwZSI6InN0cmluZyJ9LCJtb2RlbF9uYW1lIjp7ImRlZmF1bHQiOiJvcGVucm91dGVyL2RlZXBzZWVrL2RlZXBzZWVrLXYzLjIiLCJkZXNjcmlwdGlvbiI6IkxMTSBtb2RlbCBuYW1lIGZvciBsaXRlbGxtIChlLmcuLCBvcGVucm91dGVyL2RlZXBzZWVrL2RlZXBzZWVrLXYzLjIsIGFudGhyb3BpYy9jbGF1ZGUtc29ubmV0LTQtNS0yMDI1MDkyOSwgZ2VtaW5pL2dlbWluaS0yLjUtcHJvLCBncHQtNG8pIiwidHlwZSI6InN0cmluZyJ9LCJvcGVuYWlfYXBpX2tleSI6eyJzZWNyZXQiOnRydWUsInR5cGUiOiJzdHJpbmcifSwib3BlbnJvdXRlcl9hcGlfa2V5Ijp7InNlY3JldCI6dHJ1ZSwidHlwZSI6InN0cmluZyJ9fSwidHlwZSI6Im9iamVjdCJ9
+    - AMBER_COMPONENT_CONFIG_TEMPLATE_B64=eyJhbnRocm9waWNfYXBpX2tleSI6eyIkY29uZmlnIjoiY29kaW5nX2FnZW50LmFudGhyb3BpY19hcGlfa2V5In0sImdlbWluaV9hcGlfa2V5Ijp7IiRjb25maWciOiJjb2RpbmdfYWdlbnQuZ2VtaW5pX2FwaV9rZXkifSwibW9kZWxfbmFtZSI6eyIkY29uZmlnIjoiY29kaW5nX2FnZW50Lm1vZGVsX25hbWUifSwib3BlbmFpX2FwaV9rZXkiOnsiJGNvbmZpZyI6ImNvZGluZ19hZ2VudC5vcGVuYWlfYXBpX2tleSJ9LCJvcGVucm91dGVyX2FwaV9rZXkiOnsiJGNvbmZpZyI6ImNvZGluZ19hZ2VudC5vcGVucm91dGVyX2FwaV9rZXkifX0=
+    - AMBER_TEMPLATE_SPEC_B64=eyJwcm9ncmFtIjp7ImVudHJ5cG9pbnQiOltbeyJsaXQiOiJ1diJ9XSxbeyJsaXQiOiJydW4ifV0sW3sibGl0IjoicHl0aG9uIn1dLFt7ImxpdCI6InNyYy9zZXJ2ZXIucHkifV0sW3sibGl0IjoiLS1ob3N0In1dLFt7ImxpdCI6IjAuMC4wLjAifV0sW3sibGl0IjoiLS1wb3J0In1dLFt7ImxpdCI6IjkwMDkifV1dLCJlbnYiOnsiQU5USFJPUElDX0FQSV9LRVkiOnsid2hlbiI6ImFudGhyb3BpY19hcGlfa2V5IiwidmFsdWUiOlt7ImNvbmZpZyI6ImFudGhyb3BpY19hcGlfa2V5In1dfSwiR0VNSU5JX0FQSV9LRVkiOnsid2hlbiI6ImdlbWluaV9hcGlfa2V5IiwidmFsdWUiOlt7ImNvbmZpZyI6ImdlbWluaV9hcGlfa2V5In1dfSwiTU9ERUxfTkFNRSI6W3siY29uZmlnIjoibW9kZWxfbmFtZSJ9XSwiT1BFTkFJX0FQSV9LRVkiOnsid2hlbiI6Im9wZW5haV9hcGlfa2V5IiwidmFsdWUiOlt7ImNvbmZpZyI6Im9wZW5haV9hcGlfa2V5In1dfSwiT1BFTlJPVVRFUl9BUElfS0VZIjp7IndoZW4iOiJvcGVucm91dGVyX2FwaV9rZXkiLCJ2YWx1ZSI6W3siY29uZmlnIjoib3BlbnJvdXRlcl9hcGlfa2V5In1dfX19fQ==
+    - AMBER_DOCKER_MOUNT_PROXY_SPEC_B64=W3sicGF0aCI6Ii92YXIvcnVuL2RvY2tlci5zb2NrIiwidGNwX2hvc3QiOiIxMjcuMC4wLjEiLCJ0Y3BfcG9ydCI6MjAwMDB9XQ==
+    - AMBER_SCENARIO_RUN_ID=${COMPOSE_PROJECT_NAME:-default}
+    - OTEL_TRACES_SAMPLER=always_on
+    - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+    - OTEL_EXPORTER_OTLP_ENDPOINT=http://amber-otelcol:4318
+    - AMBER_COMPONENT_MONIKER=/coding_agent
+    - AMBER_SCENARIO_SCOPE=sha256:ybm1v+FJcrxvektM+LEDuRgmdQGc9g2/n0azfnlRfek=
+    labels:
+      amber_component_moniker: /coding_agent
+      amber_service_name: amber.${COMPOSE_PROJECT_NAME:-default}.coding_agent
+    volumes:
+    - amber-helper-bin:/amber/bin:ro
+    logging:
+      driver: json-file
+      options:
+        labels: amber_component_moniker,amber_service_name
+    depends_on:
+      amber-init:
+        condition: service_completed_successfully
+      c1-coding-agent-net:
+        condition: service_started
+      c3-amber-internal-framework-docker-gateway:
+        condition: service_started
+  c1-coding-agent-net:
+    image: ghcr.io/rdi-foundation/amber-router:v0.1
+    networks:
+      amber_mesh: {}
+    environment:
+    - AMBER_ROUTER_CONFIG_PATH=/amber/mesh/mesh-config.json
+    - AMBER_ROUTER_IDENTITY_PATH=/amber/mesh/mesh-identity.json
+    - AMBER_SCENARIO_RUN_ID=${COMPOSE_PROJECT_NAME:-default}
+    - OTEL_TRACES_SAMPLER=always_on
+    - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+    - OTEL_EXPORTER_OTLP_ENDPOINT=http://amber-otelcol:4318
+    volumes:
+    - c1-coding-agent-net-mesh:/amber/mesh:ro
+    depends_on:
+      amber-provisioner:
+        condition: service_completed_successfully
+  c2-green:
+    image: ghcr.io/aefhm/swe-bench-green-agent:latest
+    network_mode: service:c2-green-net
+    entrypoint:
+    - /amber/bin/amber-helper
+    - run
+    environment:
+    - AMBER_CONFIG_GREEN__BATCH_INDEX
+    - AMBER_CONFIG_GREEN__INSTANCE_IDS
+    - AMBER_CONFIG_GREEN__TOTAL_BATCHES
+    - AMBER_ROOT_CONFIG_SCHEMA_B64=eyJhZGRpdGlvbmFsUHJvcGVydGllcyI6ZmFsc2UsInByb3BlcnRpZXMiOnsiZ3JlZW4iOnsiYWRkaXRpb25hbFByb3BlcnRpZXMiOmZhbHNlLCJwcm9wZXJ0aWVzIjp7ImJhdGNoX2luZGV4Ijp7InR5cGUiOiJzdHJpbmcifSwiaW5zdGFuY2VfaWRzIjp7InR5cGUiOiJzdHJpbmcifSwidG90YWxfYmF0Y2hlcyI6eyJ0eXBlIjoic3RyaW5nIn19LCJ0eXBlIjoib2JqZWN0In19LCJ0eXBlIjoib2JqZWN0In0=
+    - AMBER_COMPONENT_CONFIG_SCHEMA_B64=eyJhZGRpdGlvbmFsUHJvcGVydGllcyI6ZmFsc2UsInByb3BlcnRpZXMiOnsiYmF0Y2hfaW5kZXgiOnsiZGVmYXVsdCI6IjAiLCJkZXNjcmlwdGlvbiI6IjAtYmFzZWQgYmF0Y2ggaW5kZXggZm9yIHRoaXMgcnVubmVyIiwidHlwZSI6InN0cmluZyJ9LCJpbnN0YW5jZV9pZHMiOnsiZGVmYXVsdCI6IiIsImRlc2NyaXB0aW9uIjoiQ29tbWEtc2VwYXJhdGVkIGluc3RhbmNlIElEcyAob3B0aW9uYWwgb3ZlcnJpZGU7IGVtcHR5ID0gdXNlIGJhdGNoIHNsaWNpbmcpIiwidHlwZSI6InN0cmluZyJ9LCJ0b3RhbF9iYXRjaGVzIjp7ImRlZmF1bHQiOiIxIiwiZGVzY3JpcHRpb24iOiJUb3RhbCBudW1iZXIgb2YgYmF0Y2hlcyBhY3Jvc3MgYWxsIHJ1bm5lcnMiLCJ0eXBlIjoic3RyaW5nIn19LCJ0eXBlIjoib2JqZWN0In0=
+    - AMBER_COMPONENT_CONFIG_TEMPLATE_B64=eyJiYXRjaF9pbmRleCI6eyIkY29uZmlnIjoiZ3JlZW4uYmF0Y2hfaW5kZXgifSwiaW5zdGFuY2VfaWRzIjp7IiRjb25maWciOiJncmVlbi5pbnN0YW5jZV9pZHMifSwidG90YWxfYmF0Y2hlcyI6eyIkY29uZmlnIjoiZ3JlZW4udG90YWxfYmF0Y2hlcyJ9fQ==
+    - AMBER_TEMPLATE_SPEC_B64=eyJwcm9ncmFtIjp7ImVudHJ5cG9pbnQiOltbeyJsaXQiOiJ1diJ9XSxbeyJsaXQiOiJydW4ifV0sW3sibGl0IjoicHl0aG9uIn1dLFt7ImxpdCI6InNyYy9zZXJ2ZXIucHkifV0sW3sibGl0IjoiLS1ob3N0In1dLFt7ImxpdCI6IjAuMC4wLjAifV0sW3sibGl0IjoiLS1wb3J0In1dLFt7ImxpdCI6IjkwMDkifV1dLCJlbnYiOnsiQkFUQ0hfSU5ERVgiOlt7ImNvbmZpZyI6ImJhdGNoX2luZGV4In1dLCJDT0RJTkdfQUdFTlRfVVJMIjpbeyJsaXQiOiJodHRwOi8vMTI3LjAuMC4xOjIwMDAwIn1dLCJJTlNUQU5DRV9JRFMiOlt7ImNvbmZpZyI6Imluc3RhbmNlX2lkcyJ9XSwiVE9UQUxfQkFUQ0hFUyI6W3siY29uZmlnIjoidG90YWxfYmF0Y2hlcyJ9XX19fQ==
+    - AMBER_DOCKER_MOUNT_PROXY_SPEC_B64=W3sicGF0aCI6Ii92YXIvcnVuL2RvY2tlci5zb2NrIiwidGNwX2hvc3QiOiIxMjcuMC4wLjEiLCJ0Y3BfcG9ydCI6MjAwMDF9XQ==
+    - AMBER_SCENARIO_RUN_ID=${COMPOSE_PROJECT_NAME:-default}
+    - OTEL_TRACES_SAMPLER=always_on
+    - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+    - OTEL_EXPORTER_OTLP_ENDPOINT=http://amber-otelcol:4318
+    - AMBER_COMPONENT_MONIKER=/green
+    - AMBER_SCENARIO_SCOPE=sha256:ybm1v+FJcrxvektM+LEDuRgmdQGc9g2/n0azfnlRfek=
+    labels:
+      amber_component_moniker: /green
+      amber_service_name: amber.${COMPOSE_PROJECT_NAME:-default}.green
+    volumes:
+    - amber-helper-bin:/amber/bin:ro
+    logging:
+      driver: json-file
+      options:
+        labels: amber_component_moniker,amber_service_name
+    depends_on:
+      amber-init:
+        condition: service_completed_successfully
+      c1-coding-agent:
+        condition: service_started
+      c2-green-net:
+        condition: service_started
+      c3-amber-internal-framework-docker-gateway:
+        condition: service_started
+  c2-green-net:
+    image: ghcr.io/rdi-foundation/amber-router:v0.1
+    networks:
+      amber_mesh: {}
+    environment:
+    - AMBER_ROUTER_CONFIG_PATH=/amber/mesh/mesh-config.json
+    - AMBER_ROUTER_IDENTITY_PATH=/amber/mesh/mesh-identity.json
+    - AMBER_SCENARIO_RUN_ID=${COMPOSE_PROJECT_NAME:-default}
+    - OTEL_TRACES_SAMPLER=always_on
+    - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+    - OTEL_EXPORTER_OTLP_ENDPOINT=http://amber-otelcol:4318
+    volumes:
+    - c2-green-net-mesh:/amber/mesh:ro
+    depends_on:
+      amber-provisioner:
+        condition: service_completed_successfully
+  c3-amber-internal-framework-docker-gateway:
+    image: ghcr.io/rdi-foundation/amber-docker-gateway:v0.1
+    network_mode: service:c3-amber-internal-framework-docker-gateway-net
+    entrypoint:
+    - /amber-docker-gateway
+    environment:
+      AMBER_COMPONENT_MONIKER: /__amber_internal_framework_docker_gateway
+      AMBER_DOCKER_GATEWAY_CONFIG_JSON: '{"listen":"0.0.0.0:23750","docker_sock":"/var/run/docker.sock","compose_project":"${COMPOSE_PROJECT_NAME}","callers":[{"host":"127.0.0.1","component":"/__amber_internal_framework_docker_gateway","compose_service":"c3-amber-internal-framework-docker-gateway"}]}'
+      AMBER_SCENARIO_RUN_ID: ${COMPOSE_PROJECT_NAME:-default}
+      AMBER_SCENARIO_SCOPE: sha256:ybm1v+FJcrxvektM+LEDuRgmdQGc9g2/n0azfnlRfek=
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://amber-otelcol:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_TRACES_SAMPLER: always_on
+    labels:
+      amber_component_moniker: /__amber_internal_framework_docker_gateway
+      amber_service_name: amber.${COMPOSE_PROJECT_NAME:-default}.__amber_internal_framework_docker_gateway
+    volumes:
+    - ${AMBER_DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
+    logging:
+      driver: json-file
+      options:
+        labels: amber_component_moniker,amber_service_name
+    depends_on:
+      c3-amber-internal-framework-docker-gateway-net:
+        condition: service_started
+  c3-amber-internal-framework-docker-gateway-net:
+    image: ghcr.io/rdi-foundation/amber-router:v0.1
+    networks:
+      amber_mesh: {}
+    environment:
+    - AMBER_ROUTER_CONFIG_PATH=/amber/mesh/mesh-config.json
+    - AMBER_ROUTER_IDENTITY_PATH=/amber/mesh/mesh-identity.json
+    - AMBER_SCENARIO_RUN_ID=${COMPOSE_PROJECT_NAME:-default}
+    - OTEL_TRACES_SAMPLER=always_on
+    - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+    - OTEL_EXPORTER_OTLP_ENDPOINT=http://amber-otelcol:4318
+    volumes:
+    - c3-amber-internal-framework-docker-gateway-net-mesh:/amber/mesh:ro
+    depends_on:
+      amber-provisioner:
+        condition: service_completed_successfully
+configs:
+  amber-mesh-provision-plan:
+    content: '{"version":"2","targets":[{"kind":"component","config":{"identity":{"id":"/coding_agent","mesh_scope":"sha256:ybm1v+FJcrxvektM+LEDuRgmdQGc9g2/n0azfnlRfek="},"mesh_listen":"0.0.0.0:23000","peers":[{"id":"/__amber_internal_framework_docker_gateway"},{"id":"/green"}],"inbound":[{"route_id":"component:/coding_agent:a2a:http","capability":"a2a","capability_kind":"a2a","protocol":"http","http_plugins":["a2a"],"target":{"kind":"local","port":9009},"allowed_issuers":["/green"]}],"outbound":[{"route_id":"component:/__amber_internal_framework_docker_gateway:__amber_internal_framework_docker:tcp","slot":"__amber_internal_framework_docker","capability_kind":"docker","listen_port":20000,"protocol":"tcp","peer_addr":"c3-amber-internal-framework-docker-gateway-net:23000","peer_id":"/__amber_internal_framework_docker_gateway","capability":"__amber_internal_framework_docker"}],"transport":{"kind":"noise_ik"}},"output":{"kind":"filesystem","dir":"/amber/provision/c1-coding-agent-net"}},{"kind":"component","config":{"identity":{"id":"/green","mesh_scope":"sha256:ybm1v+FJcrxvektM+LEDuRgmdQGc9g2/n0azfnlRfek="},"mesh_listen":"0.0.0.0:23000","peers":[{"id":"/__amber_internal_framework_docker_gateway"},{"id":"/coding_agent"},{"id":"/router"}],"inbound":[{"route_id":"component:/green:a2a:http","capability":"a2a","capability_kind":"a2a","protocol":"http","http_plugins":["a2a"],"target":{"kind":"local","port":9009},"allowed_issuers":["/router"]},{"route_id":"component:/green:results:http","capability":"results","capability_kind":"http","protocol":"http","target":{"kind":"local","port":9009},"allowed_issuers":["/router"]}],"outbound":[{"route_id":"component:/coding_agent:a2a:http","slot":"coding_agent","capability_kind":"a2a","listen_port":20000,"protocol":"http","http_plugins":["a2a"],"peer_addr":"c1-coding-agent-net:23000","peer_id":"/coding_agent","capability":"a2a"},{"route_id":"component:/__amber_internal_framework_docker_gateway:__amber_internal_framework_docker:tcp","slot":"__amber_internal_framework_docker","capability_kind":"docker","listen_port":20001,"protocol":"tcp","peer_addr":"c3-amber-internal-framework-docker-gateway-net:23000","peer_id":"/__amber_internal_framework_docker_gateway","capability":"__amber_internal_framework_docker"}],"transport":{"kind":"noise_ik"}},"output":{"kind":"filesystem","dir":"/amber/provision/c2-green-net"}},{"kind":"component","config":{"identity":{"id":"/__amber_internal_framework_docker_gateway","mesh_scope":"sha256:ybm1v+FJcrxvektM+LEDuRgmdQGc9g2/n0azfnlRfek="},"mesh_listen":"0.0.0.0:23000","peers":[{"id":"/coding_agent"},{"id":"/green"}],"inbound":[{"route_id":"component:/__amber_internal_framework_docker_gateway:__amber_internal_framework_docker:tcp","capability":"__amber_internal_framework_docker","capability_kind":"docker","protocol":"tcp","target":{"kind":"local","port":23750},"allowed_issuers":["/coding_agent","/green"]}],"outbound":[],"transport":{"kind":"noise_ik"}},"output":{"kind":"filesystem","dir":"/amber/provision/c3-amber-internal-framework-docker-gateway-net"}},{"kind":"router","config":{"identity":{"id":"/router","mesh_scope":"sha256:ybm1v+FJcrxvektM+LEDuRgmdQGc9g2/n0azfnlRfek="},"mesh_listen":"0.0.0.0:24000","peers":[{"id":"/green"}],"inbound":[{"route_id":"router:export:a2a:http","capability":"a2a","capability_kind":"a2a","protocol":"http","target":{"kind":"mesh_forward","peer_addr":"c2-green-net:23000","peer_id":"/green","route_id":"component:/green:a2a:http","capability":"a2a"},"allowed_issuers":["/router"]},{"route_id":"router:export:results:http","capability":"results","capability_kind":"http","protocol":"http","target":{"kind":"mesh_forward","peer_addr":"c2-green-net:23000","peer_id":"/green","route_id":"component:/green:results:http","capability":"results"},"allowed_issuers":["/router"]}],"outbound":[],"transport":{"kind":"noise_ik"}},"output":{"kind":"filesystem","dir":"/amber/provision/amber-router"}}]}'
+  amber-otelcol-config:
+    content: |2
+
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+        filelog/docker:
+          include:
+            - /var/lib/docker/containers/*/*-json.log
+          start_at: end
+          include_file_path: true
+          operators:
+            - type: json_parser
+              parse_from: body
+            - type: move
+              from: attributes.log
+              to: body
+            - type: move
+              from: attributes.stream
+              to: attributes.amber_stream
+            - type: json_parser
+              if: body matches "^[{]"
+              parse_from: body
+            - type: severity_parser
+              if: attributes.level != nil
+              parse_from: attributes.level
+            - type: move
+              if: attributes.message != nil
+              from: attributes.message
+              to: body
+            - type: time_parser
+              parse_from: attributes.time
+              layout_type: gotime
+              layout: '2006-01-02T15:04:05.999999999Z07:00'
+            - type: remove
+              field: attributes.time
+              if: attributes.time != nil
+
+      processors:
+        memory_limiter:
+          check_interval: 1s
+          limit_mib: 256
+          spike_limit_mib: 128
+        batch: {}
+        resource/amber:
+          attributes:
+            - key: amber.scenario.run_id
+              action: upsert
+              value: $${env:AMBER_SCENARIO_RUN_ID}
+        transform/program_logs:
+          error_mode: ignore
+          log_statements:
+            - context: scope
+              statements:
+                - set(scope.name, "amber.program")
+            - context: log
+              statements:
+                - set(log.attributes["service.name"], log.attributes["attrs"]["amber_service_name"]) where log.attributes["attrs"] != nil and log.attributes["attrs"]["amber_service_name"] != nil
+                - set(log.attributes["amber.component.moniker"], log.attributes["attrs"]["amber_component_moniker"]) where log.attributes["attrs"] != nil and log.attributes["attrs"]["amber_component_moniker"] != nil
+                - delete_key(log.attributes, "attrs") where log.attributes["attrs"] != nil
+                - set(log.severity_number, SEVERITY_NUMBER_ERROR) where log.severity_number == 0 and IsString(log.body) and IsMatch(log.body, "(?i)\\b(error|failed|exception|fatal|panic)\\b")
+                - set(log.severity_number, SEVERITY_NUMBER_WARN) where log.severity_number == 0 and IsString(log.body) and IsMatch(log.body, "(?i)\\b(warn|warning)\\b")
+                - set(log.severity_number, SEVERITY_NUMBER_WARN) where log.severity_number == 0 and log.attributes["amber_stream"] == "stderr"
+                - set(log.severity_number, SEVERITY_NUMBER_INFO) where log.severity_number == 0
+                - set(log.severity_text, "Error") where log.severity_text == "" and log.severity_number >= SEVERITY_NUMBER_ERROR
+                - set(log.severity_text, "Warning") where log.severity_text == "" and log.severity_number >= SEVERITY_NUMBER_WARN and log.severity_number < SEVERITY_NUMBER_ERROR
+                - set(log.severity_text, "Information") where log.severity_text == "" and log.severity_number >= SEVERITY_NUMBER_INFO and log.severity_number < SEVERITY_NUMBER_WARN
+        filter/program_logs:
+          error_mode: ignore
+          logs:
+            log_record:
+              - log.attributes["service.name"] == nil
+              - log.attributes["amber.component.moniker"] == nil
+        groupbyattrs/program_log_identity:
+          keys:
+            - service.name
+            - amber.component.moniker
+
+      exporters:
+        otlphttp/upstream:
+          endpoint: $${env:AMBER_OTEL_UPSTREAM_OTLP_HTTP_ENDPOINT}
+          compression: none
+          encoding: proto
+
+      service:
+        telemetry:
+          logs:
+            level: warn
+        pipelines:
+          traces:
+            receivers: [otlp]
+            processors: [memory_limiter, resource/amber, batch]
+            exporters: [otlphttp/upstream]
+          logs/otlp:
+            receivers: [otlp]
+            processors: [memory_limiter, resource/amber, batch]
+            exporters: [otlphttp/upstream]
+          logs/program:
+            receivers: [filelog/docker]
+            processors: [memory_limiter, transform/program_logs, filter/program_logs, groupbyattrs/program_log_identity, resource/amber, batch]
+            exporters: [otlphttp/upstream]
+          metrics:
+            receivers: [otlp]
+            processors: [memory_limiter, resource/amber, batch]
+            exporters: [otlphttp/upstream]
+networks:
+  amber_mesh:
+    driver: bridge
+x-amber:
+  version: '1'
+  router:
+    mesh_port: 24000
+    control_port: 24100
+    control_socket: /router-control.sock
+    control_socket_volume: ${COMPOSE_PROJECT_NAME:-default}_amber-router-control
+  exports:
+    a2a:
+      component: /green
+      provide: a2a
+      protocol: http
+      router_mesh_port: 24000
+    results:
+      component: /green
+      provide: results
+      protocol: http
+      router_mesh_port: 24000

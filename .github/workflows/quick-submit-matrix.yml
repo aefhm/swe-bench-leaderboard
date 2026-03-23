@@ -408,6 +408,10 @@ jobs:
             exit 1
           fi
 
+      # ── Open Docker socket so containers can access it as non-root ──
+      - name: Fix Docker socket permissions
+        run: sudo chmod 666 /var/run/docker.sock
+
       # ── Export config to GITHUB_ENV — secrets + batch config ─────────────────
       - name: Export AMBER_CONFIG vars
         env:

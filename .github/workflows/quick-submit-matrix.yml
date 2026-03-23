@@ -12,6 +12,7 @@ name: Quick Submit (Matrix)
 # Secrets should be configured as repo/action secrets before triggering.
 
 on:
+  # TODO: remove after testing
   workflow_dispatch:
     inputs:
       submission_id:
@@ -58,7 +59,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # From workflow_dispatch input or from branch name
           sid="${{ inputs.submission_id || '' }}"
           if [[ -z "$sid" ]]; then
             ref_name="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-}}"
@@ -67,11 +67,10 @@ jobs:
             fi
           fi
           if [[ -z "$sid" ]]; then
-            echo "No submission ID found (set input or use quick-submit-matrix-<UUID> branch)" >&2
-            echo "submission_id=" >> "$GITHUB_OUTPUT"
-          else
-            echo "submission_id=$sid" >> "$GITHUB_OUTPUT"
+            echo "Unable to derive submission ID from branch or input" >&2
+            exit 1
           fi
+          echo "submission_id=$sid" >> "$GITHUB_OUTPUT"
 
       - name: Find scenario file
         id: scenario
@@ -80,18 +79,14 @@ jobs:
           SUBMISSION_ID: ${{ steps.submission.outputs.submission_id }}
         run: |
           set -euo pipefail
-          if [[ -n "$SUBMISSION_ID" ]]; then
-            scenario=$(ls submissions/*"${SUBMISSION_ID}"*.json 2>/dev/null | grep -v provenance | head -1 || true)
+          scenario=$(ls submissions/*"${SUBMISSION_ID}"*.json 2>/dev/null | grep -v provenance | head -1)
+          if [[ -z "$scenario" ]]; then
+            echo "No scenario file found for submission ${SUBMISSION_ID}" >&2
+            exit 1
           fi
-          # Fall back to the repo's default scenario
-          if [[ -z "${scenario:-}" ]]; then
-            echo "No submission-specific scenario found; using default scenario.json5"
-            scenario="scenario.json5"
-          fi
-          base=$(basename "$scenario" | sed 's/\.\(json5\?\|toml\)$//')
+          base=$(basename "$scenario" .json)
           echo "path=$scenario" >> "$GITHUB_OUTPUT"
           echo "base=$base" >> "$GITHUB_OUTPUT"
-          echo "Using scenario: $scenario"
 
       # HACK: Patch submission JSON to manifest v0.2.0 with experimental_features
       # so amber compile doesn't reject child manifests that declare ["docker"].
@@ -191,7 +186,7 @@ jobs:
           MANIFEST_INSTANCE_IDS: ${{ steps.assessment_config.outputs.instance_ids }}
         run: |
           python3 << 'PYEOF'
-          import json, os, math
+          import json, os
 
           # Precedence: workflow_dispatch input > manifest assessment_config > hardcoded default
           def resolve(input_val, manifest_val, default):
@@ -216,28 +211,20 @@ jobs:
           print(f"  max_runners:   {MAX_RUNNERS}  (input={input_runners!r}, manifest={manifest_runners!r})")
           print(f"  instance_ids:  {INSTANCE_IDS!r}  (input={input_ids!r}, manifest={manifest_ids!r})")
 
+          # Generate batch indices — the green agent handles its own instance slicing
+          batches = [
+              {"id": f"batch-{i:03d}", "index": i, "total": MAX_RUNNERS}
+              for i in range(MAX_RUNNERS)
+          ]
+
+          # Pass instance_ids through if explicitly set (optional override)
           if INSTANCE_IDS:
-              instances = [s.strip() for s in INSTANCE_IDS.split(",") if s.strip()]
-          else:
-              with open("data/instances.jsonl") as f:
-                  all_inst = [json.loads(line) for line in f if line.strip()]
-              instances = [i["short_id"] for i in all_inst if "short_id" in i]
+              for b in batches:
+                  b["instance_ids"] = INSTANCE_IDS
 
-          batch_size = math.ceil(len(instances) / MAX_RUNNERS) if MAX_RUNNERS > 0 else len(instances)
-          batches = []
-          for i in range(0, len(instances), batch_size):
-              batch = instances[i:i + batch_size]
-              batches.append({
-                  "id": f"batch-{i // batch_size:03d}",
-                  "instances": json.dumps(batch),
-              })
-
-          print(f"\nTotal instances: {len(instances)}")
           print(f"Max runners: {MAX_RUNNERS}")
-          print(f"Batch size (derived): {batch_size}")
+          print(f"Instance IDs override: {INSTANCE_IDS[:80] + '...' if len(INSTANCE_IDS) > 80 else INSTANCE_IDS or 'none'}")
           print(f"Total batches: {len(batches)}")
-          for b in batches:
-              print(f"  {b['id']}: {len(json.loads(b['instances']))} instances")
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               out.write(f"batches={json.dumps(batches)}\n")
@@ -252,21 +239,17 @@ jobs:
       matrix:
         batch: ${{ fromJSON(needs.setup.outputs.batches) }}
       fail-fast: false
-      max-parallel: 20
 
     permissions:
       id-token: write
       contents: write
-      packages: read
 
     env:
       AMBER_IMAGE: ghcr.io/rdi-foundation/amber-cli:v0.3
-      AMBER_COMPOSE_DIR: amber-out
+      AMBER_COMPOSE_DIR: amber-compose
       AMBER_COMPOSE_PROJECT: amber-qs-matrix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.batch.id }}
-      AMBER_PROXY_PORT: "9009"
+      AMBER_PROXY_PORT: "18080"
       RESULTS_TIMEOUT_MINUTES: ${{ vars.QUICK_SUBMIT_TIMEOUT_MINUTES || '30' }}
-      # Scenario resolved in setup
-      SCENARIO_PATH: ${{ needs.setup.outputs.scenario_path }}
 
     steps:
       - name: Free disk space
@@ -392,6 +375,8 @@ jobs:
       # Remove once the agentbeats backend generates v0.2.0 submissions natively.
       - name: Patch submission to manifest v0.2.0
         shell: bash
+        env:
+          SCENARIO_PATH: ${{ needs.setup.outputs.scenario_path }}
         run: |
           set -euo pipefail
           if [[ "$SCENARIO_PATH" != *.json ]]; then
@@ -410,7 +395,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf "${AMBER_COMPOSE_DIR}"
-          amber compile "${SCENARIO_PATH}" \
+          amber compile "${{ needs.setup.outputs.scenario_path }}" \
             --output scenario-ir.json \
             --docker-compose "${AMBER_COMPOSE_DIR}"
           if ! jq -e '.exports[] | select(.name == "results" and .capability.kind == "http")' scenario-ir.json > /dev/null; then
@@ -433,7 +418,7 @@ jobs:
           python3 - <<'PYTHON'
           import re
 
-          with open("amber-out/compose.yaml") as f:
+          with open("amber-compose/compose.yaml") as f:
               content = f.read()
 
           content = re.sub(
@@ -447,25 +432,24 @@ jobs:
               replacement = r'\1\n    - /var/run/docker.sock:/var/run/docker.sock'
               content = re.sub(pattern, replacement, content, flags=re.DOTALL)
 
-          with open("amber-out/compose.yaml", "w") as f:
+          with open("amber-compose/compose.yaml", "w") as f:
               f.write(content)
           PYTHON
 
       - name: Verify HelperRunner pattern
         run: |
-          if grep -q "AMBER_ROOT_CONFIG_SCHEMA_B64" amber-out/compose.yaml; then
+          if grep -q "AMBER_ROOT_CONFIG_SCHEMA_B64" amber-compose/compose.yaml; then
             echo "✓ Compose uses HelperRunner pattern"
           else
             echo "✗ Compose uses Resolved pattern — secrets won't flow at runtime"
             exit 1
           fi
 
-      # ── Export config to GITHUB_ENV — secrets + batch instance IDs ─────────────────
+      # ── Export config to GITHUB_ENV — secrets + batch config ─────────────────
       - name: Export AMBER_CONFIG vars
         env:
           SECRETS_JSON: ${{ toJSON(secrets) }}
           MODEL_NAME: ${{ inputs.model_name }}
-          BATCH_INSTANCES: ${{ matrix.batch.instances }}
         run: |
           set -euo pipefail
           # Participant secrets → GITHUB_ENV (same pattern as quick-submit-runner)
@@ -473,9 +457,15 @@ jobs:
           if [[ -n "${MODEL_NAME:-}" ]]; then
             echo "AMBER_CONFIG_CODING_AGENT__MODEL_NAME=$MODEL_NAME" >> "${GITHUB_ENV}"
           fi
-          # Batch instance IDs → green agent config
-          instance_ids=$(echo "$BATCH_INSTANCES" | python3 -c "import sys,json; print(','.join(json.load(sys.stdin)))")
-          echo "AMBER_CONFIG_GREEN__INSTANCE_IDS=${instance_ids}" >> "${GITHUB_ENV}"
+          # Batch slicing config → green agent
+          echo "AMBER_CONFIG_GREEN__BATCH_INDEX=${{ matrix.batch.index }}" >> "${GITHUB_ENV}"
+          echo "AMBER_CONFIG_GREEN__TOTAL_BATCHES=${{ matrix.batch.total }}" >> "${GITHUB_ENV}"
+          # Optional instance_ids override
+          instance_ids="${{ matrix.batch.instance_ids }}"
+          if [[ -n "$instance_ids" ]]; then
+            echo "AMBER_CONFIG_GREEN__INSTANCE_IDS=${instance_ids}" >> "${GITHUB_ENV}"
+          fi
+          echo "Batch ${{ matrix.batch.id }}: index=${{ matrix.batch.index }}/${{ matrix.batch.total }}"
 
       # ── Run scenario with polling (same pattern as quick-submit-runner) ──
       - name: Run scenario — ${{ matrix.batch.id }}
@@ -537,34 +527,34 @@ jobs:
               continue
             fi
             if [[ "${status}" != "running" ]]; then
-              mkdir -p amber-out/output
-              jq . <<<"${response}" > amber-out/output/results.json
+              mkdir -p amber-compose/output
+              jq . <<<"${response}" > amber-compose/output/results.json
               echo "Batch ${{ matrix.batch.id }} finished with status: ${status}"
               break
             fi
             sleep 5
           done
-          if [[ ! -f amber-out/output/results.json ]]; then
+          if [[ ! -f amber-compose/output/results.json ]]; then
             echo "Timed out waiting ${RESULTS_TIMEOUT_MINUTES} minutes for batch results" >&2
             exit 1
           fi
           if [[ "${status}" != "completed" ]]; then
             echo "Batch failed:" >&2
-            cat amber-out/output/results.json >&2
+            cat amber-compose/output/results.json >&2
             exit 1
           fi
         timeout-minutes: 300
 
       - name: Stop scenario
         if: always()
-        run: docker compose -f amber-out/compose.yaml -p "${AMBER_COMPOSE_PROJECT}" down -v --remove-orphans || true
+        run: docker compose -f amber-compose/compose.yaml -p "${AMBER_COMPOSE_PROJECT}" down -v --remove-orphans || true
 
       - name: Upload batch results
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: qs-matrix-${{ matrix.batch.id }}
-          path: amber-out/output/results.json
+          path: amber-compose/output/results.json
           retention-days: 30
 
   # ── Aggregate results across all batches ──────────────────────────

@@ -387,16 +387,24 @@ jobs:
 
           content = re.sub(r'\n\s*- AMBER_DOCKER_MOUNT_PROXY_SPEC_B64=[^\n]+', '', content)
 
-          patched = []
+          patched_sock = []
+          patched_root = []
           for service in services:
+              # Add Docker socket mount
               pattern = rf'(  {service}:.*?volumes:\n\s*- amber-helper-bin:/amber/bin:ro)'
               if re.search(pattern, content, flags=re.DOTALL):
                   content = re.sub(pattern, r'\1\n    - /var/run/docker.sock:/var/run/docker.sock', content, flags=re.DOTALL)
-                  patched.append(service)
+                  patched_sock.append(service)
+              # Run as root so Docker socket is accessible without chmod
+              svc_pattern = rf'(  {service}:\n    image: [^\n]+\n)'
+              if re.search(svc_pattern, content):
+                  content = re.sub(svc_pattern, r'\1    user: "0:0"\n', content)
+                  patched_root.append(service)
 
           with open(compose_path, "w") as f:
               f.write(content)
-          print(f"Patched Docker socket into: {', '.join(patched) or 'none'}")
+          print(f"Patched Docker socket into: {', '.join(patched_sock) or 'none'}")
+          print(f"Patched root user into: {', '.join(patched_root) or 'none'}")
           PYTHON
 
       - name: Verify HelperRunner pattern
@@ -407,10 +415,6 @@ jobs:
             echo "✗ Compose uses Resolved pattern — secrets won't flow at runtime"
             exit 1
           fi
-
-      # ── Open Docker socket so containers can access it as non-root ──
-      - name: Fix Docker socket permissions
-        run: sudo chmod 666 /var/run/docker.sock
 
       # ── Export config to GITHUB_ENV — secrets + batch config ─────────────────
       - name: Export AMBER_CONFIG vars

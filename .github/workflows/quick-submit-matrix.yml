@@ -164,74 +164,51 @@ jobs:
                   config = manifest.get("metadata", {}).get("assessment_config", {})
 
           if not config:
-              print("ERROR: No assessment_config found in scenario.")
-              print("The matrix workflow requires assessment_config (max_runners, instance_ids)")
-              print("to be set in either components.gateway.config or green agent manifest metadata.")
-              raise SystemExit(1)
+              print("No assessment_config found; using defaults (max_runners=1)")
 
-          print(f"assessment_config from manifest: {json.dumps(config, indent=2)}")
+          print(f"assessment_config: {json.dumps(config, indent=2) if config else '{}'}")
 
-          # Write each field as a step output
+          # Write max_runners as step output (default 1 = single runner)
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write(f"max_runners={config.get('max_runners', 20)}\n")
-              ids = config.get("instance_ids", [])
-              out.write(f"instance_ids={','.join(ids) if ids else ''}\n")
+              out.write(f"max_runners={config.get('max_runners', 1)}\n")
           PYEOF
 
       - name: Parse instances and chunk into batches
         id: parse
         env:
-          # workflow_dispatch inputs override manifest values; manifest is the default
           MANIFEST_MAX_RUNNERS: ${{ steps.assessment_config.outputs.max_runners }}
-          MANIFEST_INSTANCE_IDS: ${{ steps.assessment_config.outputs.instance_ids }}
         run: |
           python3 << 'PYEOF'
           import json, os
 
-          # Precedence: workflow_dispatch input > manifest assessment_config > hardcoded default
-          def resolve(input_val, manifest_val, default):
-              """Return the first non-empty value."""
-              for v in [input_val, manifest_val]:
-                  if v is not None and str(v).strip() not in ("", "0"):
-                      return v
-              return default
-
+          # Precedence: workflow_dispatch input > manifest assessment_config > default
           input_runners = "${{ inputs.max_runners || '' }}".strip()
           input_ids = "${{ inputs.instance_ids || '' }}".strip()
-
           manifest_runners = os.environ.get("MANIFEST_MAX_RUNNERS", "").strip()
-          manifest_ids = os.environ.get("MANIFEST_INSTANCE_IDS", "").strip()
 
-          MAX_RUNNERS = int(resolve(input_runners, manifest_runners, "20"))
+          MAX_RUNNERS = int(input_runners or manifest_runners or "1")
+          INSTANCE_IDS = input_ids  # only from workflow input
 
-          # For instance_ids, non-empty input wins, then manifest, then empty (= all)
-          INSTANCE_IDS = input_ids or manifest_ids
+          print(f"Config: max_runners={MAX_RUNNERS} (input={input_runners!r}, manifest={manifest_runners!r})")
+          print(f"Config: instance_ids={INSTANCE_IDS!r}")
 
-          print(f"Config resolution:")
-          print(f"  max_runners:   {MAX_RUNNERS}  (input={input_runners!r}, manifest={manifest_runners!r})")
-          print(f"  instance_ids:  {INSTANCE_IDS!r}  (input={input_ids!r}, manifest={manifest_ids!r})")
-
-          # Cap runners to number of explicit instance IDs (no point running
-          # more workers than there are instances to process)
+          # Cap runners to number of explicit instance IDs
           if INSTANCE_IDS:
               num_ids = len([s.strip() for s in INSTANCE_IDS.split(",") if s.strip()])
               if num_ids < MAX_RUNNERS:
-                  print(f"  Capping max_runners from {MAX_RUNNERS} to {num_ids} (only {num_ids} instance IDs)")
+                  print(f"Capping max_runners from {MAX_RUNNERS} to {num_ids} (only {num_ids} instance IDs)")
                   MAX_RUNNERS = num_ids
 
-          # Generate batch indices — the green agent handles its own instance slicing
           batches = [
               {"id": f"batch-{i:03d}", "index": i, "total": MAX_RUNNERS}
               for i in range(MAX_RUNNERS)
           ]
 
-          # Pass instance_ids through if explicitly set (optional override)
+          # Pass instance_ids through if explicitly set
           if INSTANCE_IDS:
               for b in batches:
                   b["instance_ids"] = INSTANCE_IDS
 
-          print(f"Max runners: {MAX_RUNNERS}")
-          print(f"Instance IDs override: {INSTANCE_IDS[:80] + '...' if len(INSTANCE_IDS) > 80 else INSTANCE_IDS or 'none'}")
           print(f"Total batches: {len(batches)}")
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
@@ -475,6 +452,14 @@ jobs:
           fi
           echo "Batch ${{ matrix.batch.id }}: index=${{ matrix.batch.index }}/${{ matrix.batch.total }}"
 
+      # ── Verify env vars are flowing ──
+      - name: Verify AMBER_CONFIG env vars
+        run: |
+          echo "=== AMBER_CONFIG vars set ==="
+          env | grep ^AMBER_CONFIG_ | sed 's/=.*/=***/' | sort
+          echo "=== Compose env references ==="
+          grep 'AMBER_CONFIG_' "${AMBER_COMPOSE_DIR}/compose.yaml" | head -20
+
       # ── Run scenario with polling (same pattern as quick-submit-runner) ──
       - name: Run scenario — ${{ matrix.batch.id }}
         shell: bash
@@ -552,6 +537,16 @@ jobs:
             exit 1
           fi
         timeout-minutes: 300
+
+      - name: Show container logs
+        if: always()
+        run: |
+          echo "=== Coding Agent (last 80) ==="
+          docker compose -f amber-compose/compose.yaml -p "${AMBER_COMPOSE_PROJECT}" logs c1-coding-agent 2>&1 | tail -80 || true
+          echo "=== Green Agent (last 80) ==="
+          docker compose -f amber-compose/compose.yaml -p "${AMBER_COMPOSE_PROJECT}" logs c2-green 2>&1 | tail -80 || true
+          echo "=== Docker Gateway (last 30) ==="
+          docker compose -f amber-compose/compose.yaml -p "${AMBER_COMPOSE_PROJECT}" logs c3-amber-internal-framework-docker-gateway 2>&1 | tail -30 || true
 
       - name: Stop scenario
         if: always()

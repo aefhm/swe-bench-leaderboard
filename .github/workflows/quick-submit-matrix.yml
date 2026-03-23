@@ -488,7 +488,6 @@ jobs:
           instance_count=$(echo "$BATCH_INSTANCES" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")
           echo "AMBER_CONFIG_GREEN__INSTANCE_IDS=${instance_ids}" >> "${GITHUB_ENV}"
           echo "AMBER_CONFIG_GREEN__MAX_INSTANCES=${instance_count}" >> "${GITHUB_ENV}"
-          echo "Batch ${{ matrix.batch.id }}: ${instance_ids}"
 
       # ── Run scenario with polling (same pattern as quick-submit-runner) ──
       - name: Run scenario — ${{ matrix.batch.id }}
@@ -568,15 +567,6 @@ jobs:
           fi
         timeout-minutes: 300
 
-      # ── Cleanup ──────────────────────────────────────────────────
-      - name: Show logs
-        if: always()
-        run: |
-          echo "=== Coding Agent (last 50) ==="
-          docker compose -f amber-out/compose.yaml -p "${AMBER_COMPOSE_PROJECT}" logs c1-coding-agent 2>&1 | tail -50 || true
-          echo "=== Green Agent (last 50) ==="
-          docker compose -f amber-out/compose.yaml -p "${AMBER_COMPOSE_PROJECT}" logs c2-green 2>&1 | tail -50 || true
-
       - name: Stop scenario
         if: always()
         run: docker compose -f amber-out/compose.yaml -p "${AMBER_COMPOSE_PROJECT}" down -v --remove-orphans || true
@@ -617,53 +607,17 @@ jobs:
           import json, glob, os
 
           all_results = []
-          total_passed = 0
-          total_count = 0
-          errors = []
+          batch_files = sorted(glob.glob("results/qs-matrix-batch-*/results.json"))
 
-          # Each batch uploads a single results.json with the green agent's
-          # run_batch output: {status, accuracy, passed, total, results: [...]}
-          for f in sorted(glob.glob("results/qs-matrix-batch-*/results.json")):
+          for f in batch_files:
               with open(f) as fh:
                   data = json.load(fh)
+              all_results.extend(data.get("results", []))
 
-              batch_name = os.path.basename(os.path.dirname(f))
-
-              if data.get("status") == "failed":
-                  all_results.append({"batch": batch_name, "error": data.get("error", "unknown")})
-                  total_count += 1
-                  errors.append(batch_name)
-                  continue
-
-              for inst in data.get("results", []):
-                  all_results.append(inst)
-                  total_count += 1
-                  if inst.get("passed"):
-                      total_passed += 1
-                  elif inst.get("error"):
-                      errors.append(inst.get("instance_id", "?"))
-
-          accuracy = total_passed / total_count if total_count > 0 else 0.0
-          print(f"=== Aggregate Results ===")
-          print(f"Accuracy: {accuracy:.1%} ({total_passed}/{total_count})")
-          print()
-          for r in all_results:
-              status = "PASS" if r.get("passed") else "FAIL"
-              iid = r.get("instance_id", r.get("batch", "?"))
-              err = f"  error: {r['error']}" if r.get("error") else ""
-              print(f"  [{status}] {iid}{err}")
-
-          if errors:
-              print(f"\n{len(errors)} instance(s) had errors")
-
-          summary = {
-              "accuracy": accuracy,
-              "passed": total_passed,
-              "total": total_count,
-              "results": all_results,
-          }
           with open("results.json", "w") as f:
-              json.dump(summary, f, indent=2)
+              json.dump({"results": all_results}, f, indent=2)
+
+          print(f"Aggregated {len(all_results)} results from {len(batch_files)} batches")
           PYEOF
 
       - name: Add participants to results

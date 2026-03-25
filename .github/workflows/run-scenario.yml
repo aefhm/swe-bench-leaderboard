@@ -59,6 +59,7 @@ jobs:
               out.write(f"batches={json.dumps(batches)}\n")
           PYEOF
 
+  # ── Matrix eval job — one runner per batch ────────────────────────
   eval:
     needs: setup
     runs-on: ubuntu-latest
@@ -71,6 +72,13 @@ jobs:
     permissions:
       contents: read
       packages: read
+
+    env:
+      AMBER_IMAGE: ghcr.io/rdi-foundation/amber-cli:v0.3
+      AMBER_COMPOSE_DIR: amber-compose
+      AMBER_COMPOSE_PROJECT: amber-scenario-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.batch.id }}
+      AMBER_PROXY_PORT: "18080"
+      RESULTS_TIMEOUT_MINUTES: ${{ vars.QUICK_SUBMIT_TIMEOUT_MINUTES || '300' }}
 
     steps:
       - name: Free disk space
@@ -91,53 +99,102 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── Install amber CLI (used for compile + proxy) ─────────
+      # ── Install amber CLI ──────────────────────────────────────
       - name: Install amber CLI
+        shell: bash
         run: |
-          docker pull ghcr.io/rdi-foundation/amber-cli:v0.3
-          cid="$(docker create ghcr.io/rdi-foundation/amber-cli:v0.3)"
-          docker cp "${cid}:/amber" /usr/local/bin/amber
-          docker rm "${cid}"
-          chmod +x /usr/local/bin/amber
-          amber --help > /dev/null
+          set -euo pipefail
+          docker pull "${AMBER_IMAGE}"
+          cid="$(docker create "${AMBER_IMAGE}")"
+          cleanup() { docker rm "${cid}" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          install -d "${RUNNER_TEMP}/bin"
+          docker cp "${cid}:/amber" "${RUNNER_TEMP}/bin/amber"
+          chmod +x "${RUNNER_TEMP}/bin/amber"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+          "${RUNNER_TEMP}/bin/amber" --help >/dev/null
 
-      # ── Compile Amber scenario ────────────────────────────────
+      # ── Compile Amber scenario ─────────────────────────────────
       - name: Compile scenario
+        shell: bash
         run: |
+          set -euo pipefail
+          rm -rf "${AMBER_COMPOSE_DIR}"
           amber compile scenario.json5 \
-            --docker-compose amber-out
+            --output scenario-ir.json \
+            --docker-compose "${AMBER_COMPOSE_DIR}"
+          if ! jq -e '.exports[] | select(.name == "results" and .capability.kind == "http")' scenario-ir.json > /dev/null; then
+            echo "Scenario must export an HTTP capability named 'results'" >&2
+            exit 1
+          fi
+          if jq -e '.. | objects | select(.kind? == "docker")' scenario-ir.json > /dev/null; then
+            if [[ ! -S /var/run/docker.sock ]]; then
+              echo "Scenario uses framework.docker but /var/run/docker.sock is unavailable" >&2
+              exit 1
+            fi
+            echo "Scenario uses framework.docker — patching compose for direct socket mount"
+            echo "AMBER_USES_DOCKER=true" >> "${GITHUB_ENV}"
+          else
+            echo "Scenario does not use framework.docker"
+          fi
 
-      - name: Patch compose for direct Docker socket
+      # HACK: Bypass amber's Docker gateway proxy and mount the socket directly.
+      # The gateway (amber-docker-gateway:v0.1) drops connections with
+      # "connection closed before message completed", causing docker run to
+      # fail with exit 125 inside containers.
+      # Remove once the gateway proxy handles Docker API calls reliably.
+      - name: Patch compose — direct Docker socket mount
+        if: env.AMBER_USES_DOCKER == 'true'
         run: |
           python3 - <<'PYTHON'
           import re
 
-          with open("amber-out/compose.yaml") as f:
+          compose_path = "amber-compose/compose.yaml"
+          with open(compose_path) as f:
               content = f.read()
 
+          # 1. Strip AMBER_DOCKER_MOUNT_PROXY_SPEC_B64 so amber-helper doesn't
+          #    create a proxy socket that conflicts with the real one.
+          content = re.sub(r'\n\s*- AMBER_DOCKER_MOUNT_PROXY_SPEC_B64=[^\n]+', '', content)
+
+          # 2. Mount the host Docker socket directly into every service that
+          #    used the proxy spec (they have amber-helper-bin volumes).
           content = re.sub(
-              r'\n\s*- AMBER_DOCKER_MOUNT_PROXY_SPEC_B64=[^\n]+',
-              '',
+              r'(- amber-helper-bin:/amber/bin:ro)',
+              r'\1\n    - /var/run/docker.sock:/var/run/docker.sock',
               content,
           )
 
-          for service in ['c1-coding-agent', 'c2-green']:
-              pattern = rf'(  {service}:.*?volumes:\n\s*- amber-helper-bin:/amber/bin:ro)'
-              replacement = r'\1\n    - /var/run/docker.sock:/var/run/docker.sock'
-              content = re.sub(pattern, replacement, content, flags=re.DOTALL)
-
-          with open("amber-out/compose.yaml", "w") as f:
+          with open(compose_path, "w") as f:
               f.write(content)
+
+          mounts = content.count('/var/run/docker.sock:/var/run/docker.sock')
+          proxy_removed = 'AMBER_DOCKER_MOUNT_PROXY_SPEC_B64' not in content
+          print(f"Patched {compose_path}:")
+          print(f"  Docker socket mounted into {mounts} service(s)")
+          print(f"  Proxy spec removed: {proxy_removed}")
           PYTHON
+
+      - name: Fix Docker socket permissions
+        if: env.AMBER_USES_DOCKER == 'true'
+        run: sudo chmod 666 /var/run/docker.sock
 
       - name: Verify HelperRunner pattern
         run: |
-          if grep -q "AMBER_ROOT_CONFIG_SCHEMA_B64" amber-out/compose.yaml; then
-            echo "✓ Compose uses HelperRunner pattern"
+          if grep -q "AMBER_ROOT_CONFIG_SCHEMA_B64" "${AMBER_COMPOSE_DIR}/compose.yaml"; then
+            echo "Compose uses HelperRunner pattern"
           else
-            echo "✗ Compose uses Resolved pattern — secrets won't flow at runtime"
+            echo "Compose uses Resolved pattern — secrets won't flow at runtime" >&2
             exit 1
           fi
+
+      # ── Verify env vars are flowing ──
+      - name: Verify AMBER_CONFIG env vars
+        run: |
+          echo "=== AMBER_CONFIG vars set ==="
+          env | grep ^AMBER_CONFIG_ | sed 's/=.*/=***/' | sort
+          echo "=== Compose env references ==="
+          grep 'AMBER_CONFIG_' "${AMBER_COMPOSE_DIR}/compose.yaml" | head -20
 
       # ── Export config to GITHUB_ENV — secrets + batch config ─────────────────
       - name: Export AMBER_CONFIG vars
@@ -146,12 +203,15 @@ jobs:
           MODEL_NAME: ${{ inputs.model_name }}
         run: |
           set -euo pipefail
-          # Participant secrets → GITHUB_ENV
+          # Participant secrets -> GITHUB_ENV
+          # NOTE: amber compile v0.3 uses double-underscore separators in compose
+          # env pass-through names (AMBER_CONFIG_CODING_AGENT__MODEL_NAME).
+          # The double underscore separates component name from config key.
           echo "$SECRETS_JSON" | jq -r 'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_CODING_AGENT__\(.key | ascii_upcase)=\(.value | sub("\\s+$";""))"' >> "${GITHUB_ENV}"
           if [[ -n "$MODEL_NAME" ]]; then
             echo "AMBER_CONFIG_CODING_AGENT__MODEL_NAME=$MODEL_NAME" >> "${GITHUB_ENV}"
           fi
-          # Batch slicing config → green agent
+          # Batch slicing config -> green agent
           echo "AMBER_CONFIG_GREEN__BATCH_INDEX=${{ matrix.batch.index }}" >> "${GITHUB_ENV}"
           echo "AMBER_CONFIG_GREEN__TOTAL_BATCHES=${{ matrix.batch.total }}" >> "${GITHUB_ENV}"
           # Optional instance_ids override
@@ -166,7 +226,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          compose=(docker compose -f amber-out/compose.yaml)
+          compose=(docker compose -f "${AMBER_COMPOSE_DIR}/compose.yaml" -p "${AMBER_COMPOSE_PROJECT}")
           proxy_pid=""
           logs_pid=""
           cleanup() {
@@ -189,20 +249,21 @@ jobs:
           }
           trap cleanup EXIT
 
+          "${compose[@]}" pull --quiet
           "${compose[@]}" up -d
           "${compose[@]}" logs -f --no-color &
           logs_pid=$!
 
           # Export results — green agent auto-starts and serves results at /
-          amber proxy amber-out \
-            --export "results=127.0.0.1:9009" > amber-proxy.log 2>&1 &
+          amber proxy "${AMBER_COMPOSE_DIR}" \
+            --project-name "${AMBER_COMPOSE_PROJECT}" \
+            --export "results=127.0.0.1:${AMBER_PROXY_PORT}" > amber-proxy.log 2>&1 &
           proxy_pid=$!
 
-          poll_url="http://127.0.0.1:9009/"
+          poll_url="http://127.0.0.1:${AMBER_PROXY_PORT}/"
           echo "Polling ${poll_url} for batch ${{ matrix.batch.id }}..."
-          timeout_minutes=300
           status=""
-          deadline=$((SECONDS + (60 * timeout_minutes)))
+          deadline=$((SECONDS + (60 * RESULTS_TIMEOUT_MINUTES)))
           while (( SECONDS < deadline )); do
             if ! kill -0 "${proxy_pid}" >/dev/null 2>&1; then
               echo "amber proxy exited unexpectedly" >&2
@@ -221,45 +282,46 @@ jobs:
               continue
             fi
             if [[ "${status}" != "running" ]]; then
-              mkdir -p amber-out/output
-              jq . <<<"${response}" > amber-out/output/results.json
+              mkdir -p "${AMBER_COMPOSE_DIR}/output"
+              jq . <<<"${response}" > "${AMBER_COMPOSE_DIR}/output/results.json"
               echo "Batch ${{ matrix.batch.id }} finished with status: ${status}"
               break
             fi
             sleep 5
           done
-          if [[ ! -f amber-out/output/results.json ]]; then
-            echo "Timed out waiting for batch results" >&2
+          if [[ ! -f "${AMBER_COMPOSE_DIR}/output/results.json" ]]; then
+            echo "Timed out waiting ${RESULTS_TIMEOUT_MINUTES} minutes for batch results" >&2
             exit 1
           fi
           if [[ "${status}" != "completed" ]]; then
             echo "Batch failed:" >&2
-            cat amber-out/output/results.json >&2
+            cat "${AMBER_COMPOSE_DIR}/output/results.json" >&2
             exit 1
           fi
         timeout-minutes: 300
 
-      # ── Cleanup ──────────────────────────────────────────────
-      - name: Show logs
+      - name: Show container logs
         if: always()
         run: |
-          echo "=== Coding Agent (last 50) ==="
-          docker compose -f amber-out/compose.yaml logs c1-coding-agent 2>&1 | tail -50 || true
-          echo "=== Green Agent (last 50) ==="
-          docker compose -f amber-out/compose.yaml logs c2-green 2>&1 | tail -50 || true
+          compose=(docker compose -f "${AMBER_COMPOSE_DIR}/compose.yaml" -p "${AMBER_COMPOSE_PROJECT}")
+          for svc in $("${compose[@]}" ps --services 2>/dev/null || true); do
+            echo "=== ${svc} (last 80) ==="
+            "${compose[@]}" logs "${svc}" 2>&1 | tail -80 || true
+          done
 
       - name: Stop scenario
         if: always()
-        run: docker compose -f amber-out/compose.yaml down -v || true
+        run: docker compose -f "${AMBER_COMPOSE_DIR}/compose.yaml" -p "${AMBER_COMPOSE_PROJECT}" down -v --remove-orphans || true
 
       - name: Upload batch results
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: eval-${{ matrix.batch.id }}
-          path: amber-out/output/results.json
+          path: ${{ env.AMBER_COMPOSE_DIR }}/output/results.json
           retention-days: 30
 
+  # ── Aggregate results across all batches ──────────────────────────
   summary:
     needs: [setup, eval]
     if: always()

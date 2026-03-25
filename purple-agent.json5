@@ -24,6 +24,7 @@
     entrypoint: "uv run python src/server.py --host 0.0.0.0 --port 9009",
 
     env: {
+      MSWEA_COST_TRACKING: "ignore_errors",
       MODEL_NAME: "${config.model_name}",
       OPENAI_API_KEY: { when: "config.openai_api_key", value: "${config.openai_api_key}" },
       ANTHROPIC_API_KEY: { when: "config.anthropic_api_key", value: "${config.anthropic_api_key}" },
@@ -46,5 +47,8 @@
     a2a: { kind: "a2a", endpoint: "a2a_endpoint" },
   },
 
+    slots: {
+      llm: { kind: "http" },  // OpenRouter API endpoint
+    },
   exports: { a2a: "a2a" },
 }

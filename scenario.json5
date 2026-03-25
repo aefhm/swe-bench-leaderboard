@@ -34,7 +34,7 @@
 
   components: {
     green: {
-      manifest: "./manifests/green-agent.json5",
+      manifest: "./green-agent.json5",
       config: {
         instance_ids: "${config.green.instance_ids}",
         batch_index: "${config.green.batch_index}",
@@ -42,7 +42,7 @@
       },
     },
     coding_agent: {
-      manifest: "./manifests/purple-agent.json5",
+      manifest: "./purple-agent.json5",
       config: {
         model_name: "${config.coding_agent.model_name}",
         openai_api_key: "${config.coding_agent.openai_api_key}",
@@ -53,8 +53,13 @@
     },
   },
 
+  slots: {
+    llm: { kind: "http" },
+  },
+
   bindings: [
     { to: "#green.coding_agent", from: "#coding_agent.a2a" },
+    { to: "#coding_agent.llm", from: "slots.llm", weak: true },
   ],
 
   exports: {

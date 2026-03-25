@@ -1,0 +1,12 @@
+{
+  "manifest_digests": {},
+  "timestamp": "2026-03-23T05:59:24Z",
+  "github_actions": {
+    "run_url": "https://github.com/aefhm/swe-bench-leaderboard/actions/runs/23423205637",
+    "ref": "refs/pull/25/merge",
+    "sha": "2c5ea39c10c2a7d90a044cc0d45830a6fa937e76",
+    "repository_url": "https://github.com/aefhm/swe-bench-leaderboard",
+    "workflow_ref": "aefhm/swe-bench-leaderboard/.github/workflows/quick-submit-matrix.yml@refs/pull/25/merge",
+    "workflow_sha": "2c5ea39c10c2a7d90a044cc0d45830a6fa937e76"
+  }
+}

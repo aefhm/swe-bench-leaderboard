@@ -142,71 +142,11 @@ jobs:
       # The gateway (amber-docker-gateway:v0.1) drops connections with
       # "connection closed before message completed", causing docker run to
       # fail with exit 125 inside containers.
-      #
-      # We mount at /var/run/docker-host.sock (not /var/run/docker.sock)
-      # because amber-helper tries to bind a proxy socket at /var/run/docker.sock
-      # based on the mesh routing config. Mounting the real socket at the same
-      # path causes "failed to bind docker socket: Permission denied".
-      # DOCKER_HOST tells the docker CLI and Python SDK to use our path instead.
-      #
       # Remove once the gateway proxy handles Docker API calls reliably.
       - name: Patch compose — direct Docker socket mount
         if: env.AMBER_USES_DOCKER == 'true'
         run: |
-          python3 - <<'PYTHON'
-          import re
-
-          compose_path = "amber-compose/compose.yaml"
-          with open(compose_path) as f:
-              content = f.read()
-
-          # 1. Strip AMBER_DOCKER_MOUNT_PROXY_SPEC_B64 so amber-helper doesn't
-          #    create a proxy socket that conflicts with the real one.
-          content = re.sub(r'\n\s*- AMBER_DOCKER_MOUNT_PROXY_SPEC_B64=[^\n]+', '', content)
-
-          # 2. Mount the host Docker socket at a non-default path into every
-          #    service that uses amber-helper (they have amber-helper-bin volumes).
-          #    Using /var/run/docker-host.sock avoids conflicting with the proxy
-          #    socket that amber-helper binds at /var/run/docker.sock.
-          content = re.sub(
-              r'(- amber-helper-bin:/amber/bin:ro)',
-              r'\1\n    - /var/run/docker.sock:/var/run/docker-host.sock',
-              content,
-          )
-
-          # 3. Grant docker-socket access to non-root agent services.
-          content = re.sub(
-              r'(- /var/run/docker.sock:/var/run/docker-host\.sock)',
-              r'\1\n    group_add:\n    - root',
-              content,
-          )
-
-          # 4. Set DOCKER_HOST so the docker CLI and Python docker SDK use
-          #    the real socket instead of amber-helper's proxy socket.
-          content = re.sub(
-              r'(- AMBER_TEMPLATE_SPEC_B64=[^\n]+)',
-              r'\1\n    - DOCKER_HOST=unix:///var/run/docker-host.sock',
-              content,
-          )
-
-          # 5. Silence amber-otelcol — noisy logs obscure agent output.
-          content = re.sub(
-              r'(  amber-otelcol:\n    image: [^\n]+)',
-              r'\1\n    logging:\n      driver: none',
-              content,
-          )
-
-          with open(compose_path, "w") as f:
-              f.write(content)
-
-          mounts = content.count('/var/run/docker-host.sock')
-          docker_host_set = content.count('DOCKER_HOST=')
-          proxy_removed = 'AMBER_DOCKER_MOUNT_PROXY_SPEC_B64' not in content
-          print(f"Patched {compose_path}:")
-          print(f"  Docker socket mounted into {mounts} service(s)")
-          print(f"  DOCKER_HOST set in {docker_host_set} service(s)")
-          print(f"  Proxy spec removed: {proxy_removed}")
-          PYTHON
+          python3 patch_amber_compose.py "${AMBER_COMPOSE_DIR}/compose.yaml"
 
       - name: Fix Docker socket permissions
         if: env.AMBER_USES_DOCKER == 'true'

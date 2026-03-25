@@ -33,7 +33,17 @@ def patch(path: str) -> None:
         content,
     )
 
-    # 3. Silence amber-otelcol — its logs are noisy and obscure agent output.
+    # 3. Grant docker-socket access to non-root agent services.
+    #    Docker Desktop (macOS) maps the socket as root:root 0660 regardless
+    #    of host permissions.  Adding supplementary GID 0 lets the agent user
+    #    connect without running as root.
+    content = re.sub(
+        r"(- /var/run/docker.sock:/var/run/docker.sock)",
+        r"\1\n    group_add:\n    - root",
+        content,
+    )
+
+    # 4. Silence amber-otelcol — its logs are noisy and obscure agent output.
     content = re.sub(
         r"(  amber-otelcol:\n    image: [^\n]+)",
         r"\1\n    logging:\n      driver: none",

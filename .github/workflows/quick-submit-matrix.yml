@@ -443,11 +443,28 @@ jobs:
               content,
           )
 
+          # 3. Grant docker-socket access to non-root agent services.
+          content = re.sub(
+              r'(- /var/run/docker.sock:/var/run/docker.sock)',
+              r'\1\n    group_add:\n    - root',
+              content,
+          )
+
+          # 4. Silence amber-otelcol — noisy logs obscure agent output.
+          content = re.sub(
+              r'(  amber-otelcol:\n    image: [^\n]+)',
+              r'\1\n    logging:\n      driver: none',
+              content,
+          )
+
           with open(compose_path, "w") as f:
               f.write(content)
 
           mounts = content.count('/var/run/docker.sock:/var/run/docker.sock')
-          print(f"Direct Docker socket mounted into {mounts} service(s)")
+          proxy_removed = 'AMBER_DOCKER_MOUNT_PROXY_SPEC_B64' not in content
+          print(f"Patched {compose_path}:")
+          print(f"  Docker socket mounted into {mounts} service(s)")
+          print(f"  Proxy spec removed: {proxy_removed}")
           PYTHON
 
       - name: Fix Docker socket permissions

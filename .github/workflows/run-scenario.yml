@@ -165,7 +165,14 @@ jobs:
               content,
           )
 
-          # 3. Silence amber-otelcol — noisy logs obscure agent output.
+          # 3. Grant docker-socket access to non-root agent services.
+          content = re.sub(
+              r'(- /var/run/docker.sock:/var/run/docker.sock)',
+              r'\1\n    group_add:\n    - root',
+              content,
+          )
+
+          # 4. Silence amber-otelcol — noisy logs obscure agent output.
           content = re.sub(
               r'(  amber-otelcol:\n    image: [^\n]+)',
               r'\1\n    logging:\n      driver: none',

@@ -168,34 +168,24 @@ jobs:
           MODEL_NAME: ${{ inputs.model_name }}
         run: |
           set -euo pipefail
-          # Detect the separator amber used in the compiled compose.
-          # Older amber-cli v0.3 builds use double-underscore ("__") between
-          # component name and config key; newer builds use single ("_").
-          # We match whichever convention the compiled compose actually has.
-          if grep -q 'AMBER_CONFIG_CODING_AGENT__' "${AMBER_COMPOSE_DIR}/compose.yaml"; then
-            SEP="__"
-            echo "Detected double-underscore separator in compose"
-          else
-            SEP="_"
-            echo "Detected single-underscore separator in compose"
-          fi
-
           # Participant secrets -> GITHUB_ENV
-          echo "$SECRETS_JSON" | jq -r --arg sep "$SEP" \
-            'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_CODING_AGENT\($sep)\(.key | ascii_upcase)=\(.value | sub("\\s+$";""))"' \
+          # NOTE: amber compile v0.3 uses single-underscore separators in compose
+          # env pass-through names (AMBER_CONFIG_CODING_AGENT_MODEL_NAME).
+          echo "$SECRETS_JSON" | jq -r \
+            'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_CODING_AGENT_\(.key | ascii_upcase)=\(.value | sub("\\s+$";""))"' \
             >> "${GITHUB_ENV}"
           if [[ -n "$MODEL_NAME" ]]; then
-            echo "AMBER_CONFIG_CODING_AGENT${SEP}MODEL_NAME=$MODEL_NAME" >> "${GITHUB_ENV}"
+            echo "AMBER_CONFIG_CODING_AGENT_MODEL_NAME=$MODEL_NAME" >> "${GITHUB_ENV}"
           fi
           # Batch slicing config -> green agent
-          echo "AMBER_CONFIG_GREEN${SEP}BATCH_INDEX=${{ matrix.batch.index }}" >> "${GITHUB_ENV}"
-          echo "AMBER_CONFIG_GREEN${SEP}TOTAL_BATCHES=${{ matrix.batch.total }}" >> "${GITHUB_ENV}"
+          echo "AMBER_CONFIG_GREEN_BATCH_INDEX=${{ matrix.batch.index }}" >> "${GITHUB_ENV}"
+          echo "AMBER_CONFIG_GREEN_TOTAL_BATCHES=${{ matrix.batch.total }}" >> "${GITHUB_ENV}"
           # Optional instance_ids override
           instance_ids="${{ matrix.batch.instance_ids }}"
           if [[ -n "$instance_ids" ]]; then
-            echo "AMBER_CONFIG_GREEN${SEP}INSTANCE_IDS=${instance_ids}" >> "${GITHUB_ENV}"
+            echo "AMBER_CONFIG_GREEN_INSTANCE_IDS=${instance_ids}" >> "${GITHUB_ENV}"
           fi
-          echo "Batch ${{ matrix.batch.id }}: index=${{ matrix.batch.index }}/${{ matrix.batch.total }} (sep='${SEP}')"
+          echo "Batch ${{ matrix.batch.id }}: index=${{ matrix.batch.index }}/${{ matrix.batch.total }}"
 
       # ── Verify env vars are flowing ──
       - name: Verify AMBER_CONFIG env vars

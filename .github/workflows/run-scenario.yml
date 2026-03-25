@@ -148,6 +148,18 @@ jobs:
         run: |
           python3 patch_amber_compose.py "${AMBER_COMPOSE_DIR}/compose.yaml"
 
+      - name: Debug patched compose
+        if: env.AMBER_USES_DOCKER == 'true'
+        run: |
+          set -euo pipefail
+          echo "=== Socket-related compose lines ==="
+          rg -n "AMBER_DOCKER_MOUNT_PROXY_SPEC_B64|AMBER_TEMPLATE_SPEC_B64|/var/run/docker.sock|group_add|DOCKER_HOST" \
+            "${AMBER_COMPOSE_DIR}/compose.yaml" || true
+          echo "=== coding-agent service stanza ==="
+          sed -n '/^  c1-coding-agent:/,/^  c1-coding-agent-net:/p' "${AMBER_COMPOSE_DIR}/compose.yaml"
+          echo "=== green service stanza ==="
+          sed -n '/^  c2-green:/,/^  c2-green-net:/p' "${AMBER_COMPOSE_DIR}/compose.yaml"
+
       - name: Fix Docker socket permissions
         if: env.AMBER_USES_DOCKER == 'true'
         run: sudo chmod 666 /var/run/docker.sock

@@ -404,7 +404,7 @@ jobs:
             echo "Scenario must export an HTTP capability named 'results'" >&2
             exit 1
           fi
-          if jq -e '.. | objects | select(.kind? == "docker")' scenario-ir.json > /dev/null; then
+          if jq -e '.. | objects | select((.kind? == "docker") or (.kind? == "framework" and .capability? == "docker"))' scenario-ir.json > /dev/null; then
             if [[ ! -S /var/run/docker.sock ]]; then
               echo "Scenario uses framework.docker but /var/run/docker.sock is unavailable" >&2
               exit 1
@@ -423,49 +423,7 @@ jobs:
       - name: Patch compose — direct Docker socket mount
         if: env.AMBER_USES_DOCKER == 'true'
         run: |
-          python3 - <<'PYTHON'
-          import re
-
-          compose_path = "amber-compose/compose.yaml"
-          with open(compose_path) as f:
-              content = f.read()
-
-          # 1. Strip AMBER_DOCKER_MOUNT_PROXY_SPEC_B64 so amber-helper doesn't
-          #    create a proxy socket that conflicts with the real one.
-          content = re.sub(r'\n\s*- AMBER_DOCKER_MOUNT_PROXY_SPEC_B64=[^\n]+', '', content)
-
-          # 2. Mount the host Docker socket directly into every service that
-          #    used the proxy spec (they have amber-helper-bin volumes).
-          #    Insert the socket volume right after the amber-helper-bin line.
-          content = re.sub(
-              r'(- amber-helper-bin:/amber/bin:ro)',
-              r'\1\n    - /var/run/docker.sock:/var/run/docker.sock',
-              content,
-          )
-
-          # 3. Grant docker-socket access to non-root agent services.
-          content = re.sub(
-              r'(- /var/run/docker.sock:/var/run/docker.sock)',
-              r'\1\n    group_add:\n    - root',
-              content,
-          )
-
-          # 4. Silence amber-otelcol — noisy logs obscure agent output.
-          content = re.sub(
-              r'(  amber-otelcol:\n    image: [^\n]+)',
-              r'\1\n    logging:\n      driver: none',
-              content,
-          )
-
-          with open(compose_path, "w") as f:
-              f.write(content)
-
-          mounts = content.count('/var/run/docker.sock:/var/run/docker.sock')
-          proxy_removed = 'AMBER_DOCKER_MOUNT_PROXY_SPEC_B64' not in content
-          print(f"Patched {compose_path}:")
-          print(f"  Docker socket mounted into {mounts} service(s)")
-          print(f"  Proxy spec removed: {proxy_removed}")
-          PYTHON
+          python3 patch_amber_compose.py "${AMBER_COMPOSE_DIR}/compose.yaml"
 
       - name: Fix Docker socket permissions
         if: env.AMBER_USES_DOCKER == 'true'

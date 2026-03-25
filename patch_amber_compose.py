@@ -33,6 +33,13 @@ def patch(path: str) -> None:
         content,
     )
 
+    # 3. Silence amber-otelcol — its logs are noisy and obscure agent output.
+    content = re.sub(
+        r"(  amber-otelcol:\n    image: [^\n]+)",
+        r"\1\n    logging:\n      driver: none",
+        content,
+    )
+
     if content == original:
         print(f"Nothing to patch in {path}")
         return

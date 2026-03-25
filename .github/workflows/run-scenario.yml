@@ -165,6 +165,13 @@ jobs:
               content,
           )
 
+          # 3. Silence amber-otelcol — noisy logs obscure agent output.
+          content = re.sub(
+              r'(  amber-otelcol:\n    image: [^\n]+)',
+              r'\1\n    logging:\n      driver: none',
+              content,
+          )
+
           with open(compose_path, "w") as f:
               f.write(content)
 

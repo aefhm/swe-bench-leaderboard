@@ -100,75 +100,19 @@ jobs:
       - name: Extract assessment_config
         id: assessment_config
         shell: bash
+        env:
+          SCENARIO_PATH: ${{ steps.scenario.outputs.path }}
         run: |
           set -euo pipefail
-          # Look for assessment_config in two places:
-          # 1) Submission JSONs: components.gateway.config.assessment_config
-          # 2) Local scenario.json5: green agent manifest metadata.assessment_config
-          python3 << 'PYEOF'
-          import json, re, os, pathlib, urllib.request
+          # assessment_config lives in components.gateway.config.assessment_config
+          config=$(jq '.components.gateway.config.assessment_config // {}' "$SCENARIO_PATH")
+          echo "assessment_config: $config"
 
-          scenario_path = "${{ steps.scenario.outputs.path }}"
+          max_runners=$(echo "$config" | jq -r '.max_runners // 1')
+          instance_ids=$(echo "$config" | jq -r '(.instance_ids // []) | map(tostring) | join(",")')
 
-          # json5 files need comment/trailing-comma stripping for json.loads
-          def parse_json5(text):
-              # strip // comments (but not inside strings — good enough for manifests)
-              text = re.sub(r'(?m)^\s*//.*$', '', text)
-              text = re.sub(r'(?<!:)//.*$', '', text, flags=re.MULTILINE)
-              # strip trailing commas before } or ]
-              text = re.sub(r',\s*([}\]])', r'\1', text)
-              # unquoted keys → quoted keys (simple: word before colon)
-              text = re.sub(r'(?<=[{,\n])\s*(\w+)\s*:', r' "\1":', text)
-              return json.loads(text)
-
-          def load_json5(path_or_url):
-              if path_or_url.startswith("http://") or path_or_url.startswith("https://"):
-                  print(f"Fetching manifest from URL: {path_or_url}")
-                  with urllib.request.urlopen(path_or_url, timeout=30) as resp:
-                      text = resp.read().decode()
-              else:
-                  text = pathlib.Path(path_or_url).read_text()
-              return parse_json5(text)
-
-          scenario = load_json5(scenario_path)
-          config = {}
-
-          # 1) Submission JSONs: assessment_config lives in components.gateway.config
-          gateway_config = scenario.get("components", {}).get("gateway", {}).get("config", {})
-          if "assessment_config" in gateway_config:
-              config = gateway_config["assessment_config"]
-              print(f"Found assessment_config in gateway config")
-
-          # 2) Local scenario.json5: assessment_config lives in green agent manifest metadata
-          if not config:
-              green_manifest_ref = scenario.get("components", {}).get("green", {}).get("manifest", "")
-              if green_manifest_ref:
-                  if green_manifest_ref.startswith("http://") or green_manifest_ref.startswith("https://"):
-                      green_manifest_path = green_manifest_ref
-                  else:
-                      scenario_dir = str(pathlib.Path(scenario_path).parent)
-                      green_manifest_path = str(pathlib.Path(scenario_dir, green_manifest_ref))
-                  print(f"Green agent manifest: {green_manifest_path}")
-                  manifest = load_json5(green_manifest_path)
-                  config = manifest.get("metadata", {}).get("assessment_config", {})
-
-          if not config:
-              print("No assessment_config found; using defaults (max_runners=1)")
-
-          print(f"assessment_config: {json.dumps(config, indent=2) if config else '{}'}")
-
-          # Write step outputs (defaults: max_runners=1, instance_ids="")
-          # instance_ids in assessment_config is an array of strings → join to CSV
-          raw_ids = config.get("instance_ids", [])
-          if isinstance(raw_ids, list):
-              instance_ids_csv = ",".join(str(i) for i in raw_ids if str(i).strip())
-          else:
-              instance_ids_csv = str(raw_ids)  # fallback if already a string
-
-          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write(f"max_runners={config.get('max_runners', 1)}\n")
-              out.write(f"instance_ids={instance_ids_csv}\n")
-          PYEOF
+          echo "max_runners=${max_runners}" >> "$GITHUB_OUTPUT"
+          echo "instance_ids=${instance_ids}" >> "$GITHUB_OUTPUT"
 
       - name: Parse instances and chunk into batches
         id: parse

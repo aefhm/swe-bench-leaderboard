@@ -409,7 +409,7 @@ jobs:
               echo "Scenario uses framework.docker but /var/run/docker.sock is unavailable" >&2
               exit 1
             fi
-            echo "Scenario uses framework.docker — patching compose for direct socket mount"
+            echo "Scenario uses framework.docker"
             echo "AMBER_USES_DOCKER=true" >> "${GITHUB_ENV}"
           else
             echo "Scenario does not use framework.docker"
@@ -425,7 +425,7 @@ jobs:
 
       - name: Verify HelperRunner pattern
         run: |
-          if grep -q "AMBER_ROOT_CONFIG_SCHEMA_B64" amber-compose/compose.yaml; then
+          if grep -q "AMBER_ROOT_CONFIG_SCHEMA_B64" ${AMBER_COMPOSE_DIR}/compose.yaml; then
             echo "✓ Compose uses HelperRunner pattern"
           else
             echo "✗ Compose uses Resolved pattern — secrets won't flow at runtime"
@@ -438,20 +438,11 @@ jobs:
           SECRETS_JSON: ${{ toJSON(secrets) }}
         run: |
           set -euo pipefail
-          # Quick submit currently uses OpenAI only.
-          # NOTE: amber compile v0.3 uses single-underscore separators in compose
-          # env pass-through names (AMBER_CONFIG_CODING_AGENT_MODEL_NAME).
-          model_name="$(echo "$SECRETS_JSON" | jq -r '.MODEL_NAME // empty')"
-          openai_api_key="$(echo "$SECRETS_JSON" | jq -r '.OPENAI_API_KEY // empty')"
-          if [[ -n "$openai_api_key" ]]; then
-            printf 'AMBER_CONFIG_CODING_AGENT_OPENAI_API_KEY=%s\n' "${openai_api_key%$'\n'}" >> "${GITHUB_ENV}"
-          fi
-          if [[ -n "$model_name" ]]; then
-            printf 'AMBER_CONFIG_CODING_AGENT_MODEL_NAME=%s\n' "${model_name%$'\n'}" >> "${GITHUB_ENV}"
-          else
-            echo "AMBER_CONFIG_CODING_AGENT_MODEL_NAME=gpt-4o" >> "${GITHUB_ENV}"
-            echo "No MODEL_NAME secret set; defaulting quick-submit coding agent to gpt-4o."
-          fi
+          # Export all repo secrets as AMBER_CONFIG_CODING_AGENT_* vars
+          # NOTE: amber compile v0.3 uses single-underscore separators
+          echo "$SECRETS_JSON" | jq -r \
+            'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_CODING_AGENT_\(.key | ascii_upcase)=\(.value | sub("\\s+$";""))"' \
+            >> "${GITHUB_ENV}"
           # Batch slicing config → green agent
           echo "AMBER_CONFIG_GREEN_BATCH_INDEX=${{ matrix.batch.index }}" >> "${GITHUB_ENV}"
           echo "AMBER_CONFIG_GREEN_TOTAL_BATCHES=${{ matrix.batch.total }}" >> "${GITHUB_ENV}"
@@ -469,6 +460,20 @@ jobs:
           env | grep ^AMBER_CONFIG_ | sed 's/=.*/=***/' | sort
           echo "=== Compose env references ==="
           grep 'AMBER_CONFIG_' "${AMBER_COMPOSE_DIR}/compose.yaml" | head -20
+          # Sanity check: every compose env reference should have a matching host var
+          missing=0
+          while IFS= read -r var; do
+            var="$(echo "$var" | sed 's/^[[:space:]]*- //' | sed 's/=.*//')"
+            if [[ -z "${!var+x}" ]]; then
+              echo "WARNING: compose expects ${var} but it is NOT set in the environment" >&2
+              missing=$((missing + 1))
+            fi
+          done < <(grep -oP 'AMBER_CONFIG_\S+' "${AMBER_COMPOSE_DIR}/compose.yaml" | sort -u)
+          if (( missing > 0 )); then
+            echo "ERROR: ${missing} AMBER_CONFIG var(s) missing — secrets will not reach containers" >&2
+            exit 1
+          fi
+          echo "All compose env references have matching host vars"
 
       # ── Run scenario with polling (same pattern as quick-submit-runner) ──
       - name: Run scenario — ${{ matrix.batch.id }}

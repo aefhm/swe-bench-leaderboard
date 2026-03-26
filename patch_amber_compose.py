@@ -12,47 +12,39 @@ Usage:
     docker compose -f amber-out/compose.yaml up
 """
 
-import re
 import sys
+import yaml
 
 
 def patch(path: str) -> None:
     with open(path) as f:
-        content = f.read()
+        content = yaml.safe_load(f)
 
-    original = content
+    patched_services = []
 
-    # 1. Add user: "0:0" to every service that uses amber-helper as entrypoint
-    #    but doesn't already have a user: directive.
-    #    These are the agent services that need root to create the proxy socket.
-    content = re.sub(
-        r"(\n  (\S+):\n(?:(?!  \S).)*?)(    entrypoint:\n    - /amber/bin/amber-helper)",
-        lambda m: (
-            m.group(1) + "    user: \"0:0\"\n" + m.group(3)
-            if "user:" not in m.group(1)
-            else m.group(0)
-        ),
-        content,
-        flags=re.DOTALL,
-    )
+    services = content.get("services", {})
+    for name, svc in services.items():
+        entrypoint = svc.get("entrypoint", [])
+        # Match services that use amber-helper as entrypoint
+        # Override user even if already set — the compiler sets a non-root user
+        # (e.g. 65532:65532) but amber-helper needs root to create the proxy socket.
+        if "/amber/bin/amber-helper" in entrypoint and str(svc.get("user")) != "0:0":
+            svc["user"] = "0:0"
+            patched_services.append(name)
 
-    # 2. Silence amber-otelcol — its logs are noisy and obscure agent output.
-    content = re.sub(
-        r"(  amber-otelcol:\n    image: [^\n]+)",
-        r"\1\n    logging:\n      driver: none",
-        content,
-    )
+    # Silence amber-otelcol — its logs are noisy and obscure agent output.
+    if "amber-otelcol" in services:
+        services["amber-otelcol"].setdefault("logging", {})["driver"] = "none"
 
-    if content == original:
+    if not patched_services:
         print(f"Nothing to patch in {path}")
         return
 
     with open(path, "w") as f:
-        f.write(content)
+        yaml.dump(content, f, default_flow_style=False, sort_keys=False)
 
-    patched = len(re.findall(r'user: "0:0"', content))
     print(f"Patched {path}:")
-    print(f"  Added user: \"0:0\" to {patched} service(s)")
+    print(f"  Added user: \"0:0\" to {len(patched_services)} service(s): {', '.join(patched_services)}")
 
 
 if __name__ == "__main__":

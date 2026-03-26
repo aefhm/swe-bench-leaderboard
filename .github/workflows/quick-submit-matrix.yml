@@ -470,10 +470,14 @@ jobs:
             fi
           done < <(grep -oP 'AMBER_CONFIG_\S+' "${AMBER_COMPOSE_DIR}/compose.yaml" | sort -u)
           if (( missing > 0 )); then
-            echo "ERROR: ${missing} AMBER_CONFIG var(s) missing — secrets will not reach containers" >&2
+            echo "INFO: ${missing} AMBER_CONFIG var(s) unset (optional keys with 'when:' guards are OK)"
+          fi
+          # Hard fail only if MODEL_NAME is missing — that means secrets aren't flowing at all
+          if [[ -z "${AMBER_CONFIG_CODING_AGENT_MODEL_NAME+x}" ]]; then
+            echo "ERROR: AMBER_CONFIG_CODING_AGENT_MODEL_NAME is not set — secrets are not flowing" >&2
             exit 1
           fi
-          echo "All compose env references have matching host vars"
+          echo "Required vars verified"
 
       # ── Run scenario with polling (same pattern as quick-submit-runner) ──
       - name: Run scenario — ${{ matrix.batch.id }}

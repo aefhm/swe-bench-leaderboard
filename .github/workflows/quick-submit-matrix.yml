@@ -415,19 +415,13 @@ jobs:
             echo "Scenario does not use framework.docker"
           fi
 
-      # HACK: Bypass amber's Docker gateway proxy and mount the socket directly.
-      # The gateway (amber-docker-gateway:v0.1) drops connections with
-      # "connection closed before message completed", causing docker run to
-      # fail with exit 125 inside containers.
-      # Disabled to test whether amber-docker-gateway v0.1.46 fixes the issue.
-      # - name: Patch compose — direct Docker socket mount
-      #   if: env.AMBER_USES_DOCKER == 'true'
-      #   run: |
-      #     python3 patch_amber_compose.py "${AMBER_COMPOSE_DIR}/compose.yaml"
-      #
-      # - name: Fix Docker socket permissions
-      #   if: env.AMBER_USES_DOCKER == 'true'
-      #   run: sudo chmod 666 /var/run/docker.sock
+      # HACK: amber-helper needs root to create the Docker proxy socket at
+      # /var/run/docker.sock but the compiler doesn't set user: 0:0 on agent
+      # services. This patch adds it.
+      - name: Patch compose — fix agent container permissions
+        if: env.AMBER_USES_DOCKER == 'true'
+        run: |
+          python3 patch_amber_compose.py "${AMBER_COMPOSE_DIR}/compose.yaml"
 
       - name: Verify HelperRunner pattern
         run: |

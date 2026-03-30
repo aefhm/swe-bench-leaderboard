@@ -15,5 +15,4 @@ jobs:
     with:
       num_shards: 1
     secrets:
-      GREEN_SECRETS_JSON: >-
-        {"holdout_key":${{ toJSON(secrets.HOLDOUT_KEY) }}}
+      GREEN_SECRETS_JSON: '{}'

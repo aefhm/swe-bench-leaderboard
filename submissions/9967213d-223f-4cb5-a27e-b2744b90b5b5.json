@@ -1,0 +1,89 @@
+{
+  "manifest_version": "0.1.0",
+  "experimental_features": ["docker"],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "coding_agent_model_name": {
+        "type": "string",
+        "description": "LLM model name for litellm",
+        "default": "openrouter/deepseek/deepseek-v3.2"
+      },
+      "coding_agent_openai_api_key": { "type": "string", "secret": true },
+      "coding_agent_anthropic_api_key": { "type": "string", "secret": true },
+      "coding_agent_openrouter_api_key": { "type": "string", "secret": true },
+      "coding_agent_gemini_api_key": { "type": "string", "secret": true },
+      "green_batch_index": {
+        "type": "string",
+        "description": "0-based batch index for this runner",
+        "default": "0"
+      },
+      "green_instance_ids": {
+        "type": "string",
+        "description": "Comma-separated instance IDs (optional override)",
+        "default": ""
+      },
+      "green_total_batches": {
+        "type": "string",
+        "description": "Total number of batches across all runners",
+        "default": "1"
+      },
+      "green_num_shards": {
+        "type": "string",
+        "description": "Number of parallel shards",
+        "default": "1"
+      },
+      "green_num_instances": {
+        "type": "string",
+        "description": "Total task instances across all shards (empty = all)",
+        "default": ""
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "components": {
+    "gateway": {
+      "manifest": "https://raw.githubusercontent.com/RDI-Foundation/agentbeats-gateway/refs/tags/v0.3/amber-manifest.json5",
+      "config": {
+        "assessment_config": {
+          "num_shards": 2,
+          "num_instances": 3
+        },
+        "participant_roles": {
+          "green": "green",
+          "purple1": "coding_agent"
+        },
+        "callback_urls": {}
+      }
+    },
+    "green": {
+      "manifest": "https://raw.githubusercontent.com/aefhm/swe-bench-green-agent/refs/heads/main/amber-manifest.json5",
+      "config": {
+        "batch_index": "${config.green_batch_index}",
+        "instance_ids": "${config.green_instance_ids}",
+        "total_batches": "${config.green_total_batches}",
+        "num_shards": "${config.green_num_shards}",
+        "num_instances": "${config.green_num_instances}"
+      }
+    },
+    "coding_agent": {
+      "manifest": "https://raw.githubusercontent.com/aefhm/swe-bench-purple-agent/refs/heads/main/amber-manifest.json5",
+      "config": {
+        "model_name": "${config.coding_agent_model_name}",
+        "openai_api_key": "${config.coding_agent_openai_api_key}",
+        "anthropic_api_key": "${config.coding_agent_anthropic_api_key}",
+        "openrouter_api_key": "${config.coding_agent_openrouter_api_key}",
+        "gemini_api_key": "${config.coding_agent_gemini_api_key}"
+      }
+    }
+  },
+  "bindings": [
+    { "to": "#gateway.green", "from": "#green.a2a" },
+    { "to": "#gateway.purple1", "from": "#coding_agent.a2a" },
+    { "to": "#green.coding_agent", "from": "#coding_agent.a2a" }
+  ],
+  "exports": {
+    "results": "#gateway.results"
+  }
+}

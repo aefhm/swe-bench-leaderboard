@@ -1,0 +1,26 @@
+{
+  "image_digests": {
+    "/coding_agent": "ghcr.io/aefhm/swe-bench-purple-agent@sha256:c5d76a34d051bd6e4860752d482cdf1c093f2b142a9f82d48ccd3151dc36d3fa",
+    "/gateway": "ghcr.io/rdi-foundation/agentbeats-gateway@sha256:3f9976889c598092dc4273312ec431cbc48bbe064ff65b5613425f4990bc1d4c",
+    "/green": "ghcr.io/aefhm/swe-bench-green-agent@sha256:1e1c10293a2eaf098ae01deba0329a735ddde851d4af4d993e7c741e608cbef5"
+  },
+  "shard_manifest_digests": [
+    {
+      "/": "sha256:fMVnH1UPJn4xpO7GjIupILN5dSwt6WEzfGGTIZx/3Qg=",
+      "/coding_agent": "sha256:cwl9nbnc6PJl8RnY+i1AmO++3jFZ42mje/LxOq2Vi9s=",
+      "/gateway": "sha256:0nK+Cnn/T4UOQIP2JqNrAx8gHGVWjBsCUTBFgYgC44c=",
+      "/green": "sha256:EsF3RvgPAeio4NDhAWwMfMt6F+fNRFuD8P38jtJ5ar8="
+    }
+  ],
+  "shard_timestamps": [
+    "2026-03-30T04:41:16Z"
+  ],
+  "github_actions": {
+    "run_url": "https://github.com/aefhm/swe-bench-leaderboard/actions/runs/23724861254",
+    "ref": "refs/pull/49/merge",
+    "sha": "6aefcf1456b876ba6e05474213106715ee423078",
+    "repository_url": "https://github.com/aefhm/swe-bench-leaderboard",
+    "workflow_ref": "aefhm/swe-bench-leaderboard/.github/workflows/quick-submit.yml@refs/pull/49/merge",
+    "workflow_sha": "6aefcf1456b876ba6e05474213106715ee423078"
+  }
+}

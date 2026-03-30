@@ -27,6 +27,15 @@
         "type": "string",
         "description": "Total number of batches across all runners",
         "default": "1"
+      },
+      "green_num_shards": {
+        "type": "string",
+        "description": "Number of parallel shards",
+        "default": "1"
+      },
+      "green_num_instances": {
+        "type": "string",
+        "description": "Total task instances across all shards"
       }
     },
     "required": [],
@@ -52,7 +61,9 @@
       "config": {
         "batch_index": "${config.green_batch_index}",
         "instance_ids": "${config.green_instance_ids}",
-        "total_batches": "${config.green_total_batches}"
+        "total_batches": "${config.green_total_batches}",
+        "num_shards": "${config.green_num_shards}",
+        "num_instances": "${config.green_num_instances}"
       }
     },
     "coding_agent": {

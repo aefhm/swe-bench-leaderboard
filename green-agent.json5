@@ -20,6 +20,15 @@
         description: "Total number of batches across all runners",
         default: "1",
       },
+      num_shards: {
+        type: "string",
+        description: "Number of parallel shards",
+        default: "1",
+      },
+      num_instances: {
+        type: "string",
+        description: "Total task instances across all shards (omit for all)",
+      },
     },
     required: [],
     additionalProperties: false,

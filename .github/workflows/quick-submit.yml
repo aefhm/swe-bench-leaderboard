@@ -13,6 +13,6 @@ jobs:
       id-token: write
       contents: write
     with:
-      num_shards: 1
+      num_shards: 2
     secrets:
       GREEN_SECRETS_JSON: '{}'

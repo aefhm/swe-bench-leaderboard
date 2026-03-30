@@ -37,8 +37,8 @@
       "manifest": "https://raw.githubusercontent.com/RDI-Foundation/agentbeats-gateway/refs/tags/v0.3/amber-manifest.json5",
       "config": {
         "assessment_config": {
-          "num_shards": 1,
-          "num_instances": 2
+          "num_shards": 2,
+          "num_instances": 3
         },
         "participant_roles": {
           "green": "green",

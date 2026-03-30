@@ -8,7 +8,12 @@ on:
 jobs:
   run-scenario:
     if: startsWith(github.head_ref, 'quick-submit-')
-    uses: RDI-Foundation/agentbeats-leaderboard-template/.github/workflows/quick-submit-runner.yml@v2
+    uses: RDI-Foundation/agentbeats-leaderboard-template/.github/workflows/quick-submit-runner.yml@v2-matrix
     permissions:
       id-token: write
       contents: write
+    with:
+      num_shards: 1
+    secrets:
+      GREEN_SECRETS_JSON: >-
+        {"holdout_key":${{ toJSON(secrets.HOLDOUT_KEY) }}}

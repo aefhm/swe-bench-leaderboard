@@ -35,7 +35,8 @@
       },
       "green_num_instances": {
         "type": "string",
-        "description": "Total task instances across all shards"
+        "description": "Total task instances across all shards (empty = all)",
+        "default": ""
       }
     },
     "required": [],

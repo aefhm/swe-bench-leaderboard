@@ -21,14 +21,14 @@
       green: {
         type: "object",
         properties: {
-          instance_ids: { type: "string" },
-          batch_index: { type: "string" },
-          total_batches: { type: "string" },
+          shard_index: { type: "string" },
+          num_shards: { type: "string" },
+          num_instances: { type: "string" },
         },
         additionalProperties: false,
       },
     },
-    required: ["coding_agent"],
+    required: [],
     additionalProperties: false,
   },
 
@@ -36,9 +36,9 @@
     green: {
       manifest: "./green-agent.json5",
       config: {
-        instance_ids: "${config.green.instance_ids}",
-        batch_index: "${config.green.batch_index}",
-        total_batches: "${config.green.total_batches}",
+        shard_index: "${config.green.shard_index}",
+        num_shards: "${config.green.num_shards}",
+        num_instances: "${config.green.num_instances}",
       },
     },
     coding_agent: {

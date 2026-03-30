@@ -3,70 +3,38 @@ name: Run Scenario
 on:
   workflow_dispatch:
     inputs:
-      model_name:
-        description: "LLM model name for litellm (e.g., openrouter/deepseek/deepseek-v3.2, anthropic/claude-sonnet-4-5-20250929)"
-        default: ""
-        type: string
-      instance_ids:
-        description: "Comma-separated instance IDs to evaluate (empty = all)"
-        default: ""
-        type: string
-      max_runners:
-        description: "Maximum number of parallel runners"
+      num_shards:
+        description: "Number of parallel shards"
         default: "20"
         type: string
+      num_instances:
+        description: "Total number of task instances to run across all shards (empty = all)"
+        default: ""
+        type: string
+
+env:
+  NUM_SHARDS: ${{ inputs.num_shards || '20' }}
 
 jobs:
   setup:
     runs-on: ubuntu-latest
     outputs:
-      batches: ${{ steps.parse.outputs.batches }}
+      shard_indices: ${{ steps.gen.outputs.shard_indices }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Parse instances and chunk into batches
-        id: parse
-        run: |
-          python3 << 'PYEOF'
-          import json, os
+      - name: Generate shard matrix
+        id: gen
+        run: echo "shard_indices=$(seq 0 $(( ${{ inputs.num_shards || '20' }} - 1 )) | jq -sc .)" >> "$GITHUB_OUTPUT"
 
-          MAX_RUNNERS = int("${{ inputs.max_runners || '20' }}")
-          INSTANCE_IDS = "${{ inputs.instance_ids || '' }}".strip()
-
-          # Cap runners to number of explicit instance IDs
-          if INSTANCE_IDS:
-              num_ids = len([s.strip() for s in INSTANCE_IDS.split(",") if s.strip()])
-              if num_ids < MAX_RUNNERS:
-                  print(f"Capping max_runners from {MAX_RUNNERS} to {num_ids} (only {num_ids} instance IDs)")
-                  MAX_RUNNERS = num_ids
-
-          batches = [
-              {"id": f"batch-{i:03d}", "index": i, "total": MAX_RUNNERS}
-              for i in range(MAX_RUNNERS)
-          ]
-
-          # Pass instance_ids through if explicitly set (optional override)
-          if INSTANCE_IDS:
-              for b in batches:
-                  b["instance_ids"] = INSTANCE_IDS
-
-          print(f"Max runners: {MAX_RUNNERS}")
-          print(f"Instance IDs override: {INSTANCE_IDS[:80] + '...' if len(INSTANCE_IDS) > 80 else INSTANCE_IDS or 'none'}")
-          print(f"Total batches: {len(batches)}")
-
-          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write(f"batches={json.dumps(batches)}\n")
-          PYEOF
-
-  # ── Matrix eval job — one runner per batch ────────────────────────
   eval:
     needs: setup
     runs-on: ubuntu-latest
     timeout-minutes: 330
     strategy:
       matrix:
-        batch: ${{ fromJSON(needs.setup.outputs.batches) }}
+        shard_index: ${{ fromJSON(needs.setup.outputs.shard_indices) }}
       fail-fast: false
 
     permissions:
@@ -76,7 +44,7 @@ jobs:
     env:
       AMBER_IMAGE: ghcr.io/rdi-foundation/amber-cli:v0.3
       AMBER_COMPOSE_DIR: amber-compose
-      AMBER_COMPOSE_PROJECT: amber-scenario-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.batch.id }}
+      AMBER_COMPOSE_PROJECT: amber-scenario-${{ github.run_id }}-${{ github.run_attempt }}-shard-${{ matrix.shard_index }}
       AMBER_PROXY_PORT: "18080"
       RESULTS_TIMEOUT_MINUTES: ${{ vars.QUICK_SUBMIT_TIMEOUT_MINUTES || '300' }}
 
@@ -99,7 +67,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── Install amber CLI ──────────────────────────────────────
+      - name: Export AMBER_CONFIG vars
+        env:
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+        run: |
+          set -euo pipefail
+          # Export all repo secrets as AMBER_CONFIG_* env vars.
+          # Secret names should match the scenario config_schema path with double
+          # underscores as separators, e.g. a secret named FOO__BAR maps to
+          # config.foo.bar in the scenario.
+          echo "$SECRETS_JSON" | jq -r \
+            'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_\(.key | ascii_upcase)=\(.value | sub("\\s+$";""))"' \
+            >> "${GITHUB_ENV}"
+          # Shard config -> green agent
+          echo "AMBER_CONFIG_GREEN__SHARD_INDEX=${{ matrix.shard_index }}" >> "${GITHUB_ENV}"
+          echo "AMBER_CONFIG_GREEN__NUM_SHARDS=${NUM_SHARDS}" >> "${GITHUB_ENV}"
+          if [[ -n "${{ inputs.num_instances }}" ]]; then
+            echo "AMBER_CONFIG_GREEN__NUM_INSTANCES=${{ inputs.num_instances }}" >> "${GITHUB_ENV}"
+          fi
+          echo "Shard ${{ matrix.shard_index }}/${NUM_SHARDS}"
+
       - name: Install amber CLI
         shell: bash
         run: |
@@ -114,7 +101,6 @@ jobs:
           echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
           "${RUNNER_TEMP}/bin/amber" --help >/dev/null
 
-      # ── Compile Amber scenario ─────────────────────────────────
       - name: Compile scenario
         shell: bash
         run: |
@@ -132,83 +118,9 @@ jobs:
               echo "Scenario uses framework.docker but /var/run/docker.sock is unavailable" >&2
               exit 1
             fi
-            echo "Scenario uses framework.docker"
-            echo "AMBER_USES_DOCKER=true" >> "${GITHUB_ENV}"
-          else
-            echo "Scenario does not use framework.docker"
           fi
 
-      # HACK: amber-helper needs root to create the Docker proxy socket at
-      # /var/run/docker.sock but the compiler doesn't set user: 0:0 on agent
-      # services. This patch adds it.
-      - name: Patch compose — fix agent container permissions
-        if: env.AMBER_USES_DOCKER == 'true'
-        run: |
-          python3 patch_amber_compose.py "${AMBER_COMPOSE_DIR}/compose.yaml"
-
-      - name: Verify HelperRunner pattern
-        run: |
-          if grep -q "AMBER_ROOT_CONFIG_SCHEMA_B64" "${AMBER_COMPOSE_DIR}/compose.yaml"; then
-            echo "Compose uses HelperRunner pattern"
-          else
-            echo "Compose uses Resolved pattern — secrets won't flow at runtime" >&2
-            exit 1
-          fi
-
-      # ── Export config to GITHUB_ENV — secrets + batch config ─────────────────
-      - name: Export AMBER_CONFIG vars
-        env:
-          SECRETS_JSON: ${{ toJSON(secrets) }}
-          MODEL_NAME: ${{ inputs.model_name }}
-        run: |
-          set -euo pipefail
-          # Participant secrets -> GITHUB_ENV
-          # NOTE: amber compile v0.3 uses single-underscore separators in compose
-          # env pass-through names (AMBER_CONFIG_CODING_AGENT_MODEL_NAME).
-          echo "$SECRETS_JSON" | jq -r \
-            'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_CODING_AGENT_\(.key | ascii_upcase)=\(.value | sub("\\s+$";""))"' \
-            >> "${GITHUB_ENV}"
-          if [[ -n "$MODEL_NAME" ]]; then
-            echo "AMBER_CONFIG_CODING_AGENT_MODEL_NAME=$MODEL_NAME" >> "${GITHUB_ENV}"
-          fi
-          # Batch slicing config -> green agent
-          echo "AMBER_CONFIG_GREEN_BATCH_INDEX=${{ matrix.batch.index }}" >> "${GITHUB_ENV}"
-          echo "AMBER_CONFIG_GREEN_TOTAL_BATCHES=${{ matrix.batch.total }}" >> "${GITHUB_ENV}"
-          # Optional instance_ids override
-          instance_ids="${{ matrix.batch.instance_ids }}"
-          if [[ -n "$instance_ids" ]]; then
-            echo "AMBER_CONFIG_GREEN_INSTANCE_IDS=${instance_ids}" >> "${GITHUB_ENV}"
-          fi
-          echo "Batch ${{ matrix.batch.id }}: index=${{ matrix.batch.index }}/${{ matrix.batch.total }}"
-
-      # ── Verify env vars are flowing ──
-      - name: Verify AMBER_CONFIG env vars
-        run: |
-          echo "=== AMBER_CONFIG vars set ==="
-          env | grep ^AMBER_CONFIG_ | sed 's/=.*/=***/' | sort
-          echo "=== Compose env references ==="
-          grep 'AMBER_CONFIG_' "${AMBER_COMPOSE_DIR}/compose.yaml" | head -20
-          # Sanity check: every compose env reference should have a matching host var
-          missing=0
-          while IFS= read -r var; do
-            var="$(echo "$var" | sed 's/^[[:space:]]*- //' | sed 's/=.*//')"
-            if [[ -z "${!var+x}" ]]; then
-              echo "WARNING: compose expects ${var} but it is NOT set in the environment" >&2
-              missing=$((missing + 1))
-            fi
-          done < <(grep -oP 'AMBER_CONFIG_\S+' "${AMBER_COMPOSE_DIR}/compose.yaml" | sort -u)
-          if (( missing > 0 )); then
-            echo "INFO: ${missing} AMBER_CONFIG var(s) unset (optional keys with 'when:' guards are OK)"
-          fi
-          # Hard fail only if MODEL_NAME is missing — that means secrets aren't flowing at all
-          if [[ -z "${AMBER_CONFIG_CODING_AGENT_MODEL_NAME+x}" ]]; then
-            echo "ERROR: AMBER_CONFIG_CODING_AGENT_MODEL_NAME is not set — secrets are not flowing" >&2
-            exit 1
-          fi
-          echo "Required vars verified"
-
-      # ── Run scenario with polling ───────────────────────────────
-      - name: Run scenario — ${{ matrix.batch.id }}
+      - name: Run scenario — shard-${{ matrix.shard_index }}
         shell: bash
         run: |
           set -euo pipefail
@@ -236,18 +148,52 @@ jobs:
           trap cleanup EXIT
 
           "${compose[@]}" pull --quiet
+
+          # Generate provenance (image digests + manifest digests)
+          image_digests=$(jq -r '.components[] | select(.program) | "\(.moniker)=\(.program.image)"' scenario-ir.json | while IFS='=' read -r name image; do
+            digest=$(docker image inspect "$image" --format '{{index .RepoDigests 0}}')
+            printf '%s\t%s\n' "$name" "$digest"
+          done | jq -Rn '[inputs | split("\t") | {(.[0]): .[1]}] | add // {}')
+          manifest_digests=$(jq '[.components[] | {(.moniker): .digest}] | add // {}' scenario-ir.json)
+          timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          mkdir -p "${AMBER_COMPOSE_DIR}/output"
+          jq -n \
+            --argjson image_digests "$image_digests" \
+            --argjson manifest_digests "$manifest_digests" \
+            --arg timestamp "$timestamp" \
+            --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --arg ref "${{ github.ref }}" \
+            --arg sha "${{ github.sha }}" \
+            --arg repository_url "${{ github.server_url }}/${{ github.repository }}" \
+            --arg workflow_ref "${{ github.workflow_ref }}" \
+            --arg workflow_sha "${{ github.workflow_sha }}" \
+            '{
+              image_digests: $image_digests,
+              manifest_digests: $manifest_digests,
+              timestamp: $timestamp,
+              github_actions: {
+                run_url: $run_url,
+                ref: $ref,
+                sha: $sha,
+                repository_url: $repository_url,
+                workflow_ref: $workflow_ref,
+                workflow_sha: $workflow_sha
+              }
+            }' > "${AMBER_COMPOSE_DIR}/output/provenance.json"
+          echo "Provenance:"
+          cat "${AMBER_COMPOSE_DIR}/output/provenance.json"
+
           "${compose[@]}" up -d
           "${compose[@]}" logs -f --no-color &
           logs_pid=$!
 
-          # Export results — green agent auto-starts and serves results at /
           amber proxy "${AMBER_COMPOSE_DIR}" \
             --project-name "${AMBER_COMPOSE_PROJECT}" \
             --export "results=127.0.0.1:${AMBER_PROXY_PORT}" > amber-proxy.log 2>&1 &
           proxy_pid=$!
 
           poll_url="http://127.0.0.1:${AMBER_PROXY_PORT}/"
-          echo "Polling ${poll_url} for batch ${{ matrix.batch.id }}..."
+          echo "Polling ${poll_url} for shard ${{ matrix.shard_index }}..."
           status=""
           deadline=$((SECONDS + (60 * RESULTS_TIMEOUT_MINUTES)))
           while (( SECONDS < deadline )); do
@@ -270,7 +216,7 @@ jobs:
             if [[ "${status}" != "running" ]]; then
               mkdir -p "${AMBER_COMPOSE_DIR}/output"
               jq . <<<"${response}" > "${AMBER_COMPOSE_DIR}/output/results.json"
-              echo "Batch ${{ matrix.batch.id }} finished with status: ${status}"
+              echo "Shard ${{ matrix.shard_index }} finished with status: ${status}"
               break
             fi
             sleep 5
@@ -299,85 +245,60 @@ jobs:
         if: always()
         run: docker compose -f "${AMBER_COMPOSE_DIR}/compose.yaml" -p "${AMBER_COMPOSE_PROJECT}" down -v --remove-orphans || true
 
-      - name: Upload batch results
+      - name: Upload shard results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: eval-${{ matrix.batch.id }}
-          path: ${{ env.AMBER_COMPOSE_DIR }}/output/results.json
-          retention-days: 30
+          name: shard-${{ matrix.shard_index }}
+          path: |
+            ${{ env.AMBER_COMPOSE_DIR }}/output/results.json
+            ${{ env.AMBER_COMPOSE_DIR }}/output/provenance.json
 
-  # ── Aggregate results across all batches ──────────────────────────
   summary:
     needs: [setup, eval]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Download all results
+      - name: Download all shard artifacts
         uses: actions/download-artifact@v8
         with:
-          path: results
-          pattern: eval-*
+          path: shard-artifacts
+          pattern: shard-*
           merge-multiple: false
 
       - name: Aggregate results
         run: |
-          python3 << 'PYEOF'
-          import json, glob, os
-
-          all_results = []
-          total_passed = 0
-          total_count = 0
-          errors = []
-
-          # Each batch uploads a single results.json with the green agent's
-          # run_batch output: {status, accuracy, passed, total, results: [...]}
-          for f in sorted(glob.glob("results/eval-batch-*/results.json")):
-              with open(f) as fh:
-                  data = json.load(fh)
-
-              batch_name = os.path.basename(os.path.dirname(f))
-
-              if data.get("status") == "failed":
-                  all_results.append({"batch": batch_name, "error": data.get("error", "unknown")})
-                  total_count += 1
-                  errors.append(batch_name)
-                  continue
-
-              for inst in data.get("results", []):
-                  all_results.append(inst)
-                  total_count += 1
-                  if inst.get("passed"):
-                      total_passed += 1
-                  elif inst.get("error"):
-                      errors.append(inst.get("instance_id", "?"))
-
-          accuracy = total_passed / total_count if total_count > 0 else 0.0
-          print(f"=== Aggregate Results ===")
-          print(f"Accuracy: {accuracy:.1%} ({total_passed}/{total_count})")
-          print()
-          for r in all_results:
-              status = "PASS" if r.get("passed") else "FAIL"
-              iid = r.get("instance_id", r.get("batch", "?"))
-              err = f"  error: {r['error']}" if r.get("error") else ""
-              print(f"  [{status}] {iid}{err}")
-
-          if errors:
-              print(f"\n{len(errors)} instance(s) had errors")
-
-          summary = {
-              "accuracy": accuracy,
-              "passed": total_passed,
-              "total": total_count,
-              "results": all_results,
-          }
-          with open("results.json", "w") as f:
-              json.dump(summary, f, indent=2)
-          PYEOF
+          set -euo pipefail
+          # Single-artifact downloads extract flat; normalize to subdirs
+          if [[ -f "shard-artifacts/results.json" && ! -d "shard-artifacts/shard-0" ]]; then
+            mkdir -p shard-artifacts/shard-0
+            mv shard-artifacts/results.json shard-artifacts/shard-0/
+            mv shard-artifacts/provenance.json shard-artifacts/shard-0/ 2>/dev/null || true
+          fi
+          # Build expected file paths from shard count
+          shard_results=()
+          for i in $(seq 0 $(( ${NUM_SHARDS} - 1 ))); do
+            f="shard-artifacts/shard-${i}/results.json"
+            if [[ ! -f "$f" ]]; then
+              echo "ERROR: missing results for shard ${i}" >&2
+              ls -R shard-artifacts/ >&2 || true
+              exit 1
+            fi
+            shard_results+=("$f")
+          done
+          jq -s '{
+            status: (if all(.[]; .status == "completed") then "completed"
+                    elif any(.[]; .status == "completed") then "partial"
+                    else "failed" end),
+            results: [.[].results[] | if .results then .results[] else . end]
+          }' "${shard_results[@]}" > results.json
+          passed=$(jq '[.results[] | select(.passed == true)] | length' results.json)
+          total=$(jq '.results | length' results.json)
+          echo "=== Aggregate Results ==="
+          echo "Accuracy: ${passed}/${total}"
 
       - name: Upload aggregate results
         uses: actions/upload-artifact@v7
         with:
           name: eval-aggregate
           path: results.json
-          retention-days: 30

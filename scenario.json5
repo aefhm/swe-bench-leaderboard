@@ -18,28 +18,26 @@
         },
         additionalProperties: false,
       },
-      green: {
-        type: "object",
-        properties: {
-          shard_index: { type: "string" },
-          num_shards: { type: "string" },
-          num_instances: { type: "string" },
-        },
-        additionalProperties: false,
-      },
     },
     required: [],
     additionalProperties: false,
   },
 
   components: {
+    gateway: {
+      manifest: "https://raw.githubusercontent.com/RDI-Foundation/agentbeats-gateway/refs/tags/v0.3/amber-manifest.json5",
+      config: {
+        assessment_config: {},
+        participant_roles: {
+          green: "green",
+          purple1: "coding_agent",
+        },
+        callback_urls: {},
+      },
+    },
     green: {
       manifest: "./green-agent.json5",
-      config: {
-        shard_index: "${config.green.shard_index}",
-        num_shards: "${config.green.num_shards}",
-        num_instances: "${config.green.num_instances}",
-      },
+      config: {},
     },
     coding_agent: {
       manifest: "./purple-agent.json5",
@@ -58,12 +56,13 @@
   },
 
   bindings: [
-    { to: "#green.coding_agent", from: "#coding_agent.a2a" },
+    { to: "#gateway.green", from: "#green.a2a" },
+    { to: "#gateway.purple1", from: "#coding_agent.a2a" },
+    { to: "#green.coding_agent", from: "#gateway.proxy", weak: true },
     { to: "#coding_agent.llm", from: "slots.llm", weak: true },
   ],
 
   exports: {
-    a2a: "#green.a2a",
-    results: "#green.results",
+    results: "#gateway.results",
   },
 }

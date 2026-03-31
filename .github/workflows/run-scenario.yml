@@ -39,14 +39,13 @@ jobs:
 
     permissions:
       contents: read
-      packages: read
 
     env:
       AMBER_IMAGE: ghcr.io/rdi-foundation/amber-cli:v0.3
       AMBER_COMPOSE_DIR: amber-compose
       AMBER_COMPOSE_PROJECT: amber-scenario-${{ github.run_id }}-${{ github.run_attempt }}-shard-${{ matrix.shard_index }}
       AMBER_PROXY_PORT: "18080"
-      RESULTS_TIMEOUT_MINUTES: ${{ vars.QUICK_SUBMIT_TIMEOUT_MINUTES || '300' }}
+      RESULTS_TIMEOUT_MINUTES: ${{ vars.RUN_SCENARIO_TIMEOUT_MINUTES || '300' }}
 
     steps:
       - name: Free disk space
@@ -60,13 +59,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Export AMBER_CONFIG vars
         env:
           SECRETS_JSON: ${{ toJSON(secrets) }}
@@ -79,13 +71,19 @@ jobs:
           echo "$SECRETS_JSON" | jq -r \
             'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_\(.key | ascii_upcase)=\(.value | sub("\\s+$";""))"' \
             >> "${GITHUB_ENV}"
-          # Shard config -> green agent
-          echo "AMBER_CONFIG_GREEN__SHARD_INDEX=${{ matrix.shard_index }}" >> "${GITHUB_ENV}"
-          echo "AMBER_CONFIG_GREEN__NUM_SHARDS=${NUM_SHARDS}" >> "${GITHUB_ENV}"
-          if [[ -n "${{ inputs.num_instances }}" ]]; then
-            echo "AMBER_CONFIG_GREEN__NUM_INSTANCES=${{ inputs.num_instances }}" >> "${GITHUB_ENV}"
-          fi
-          echo "Shard ${{ matrix.shard_index }}/${NUM_SHARDS}"
+
+      - name: Patch shard config into scenario
+        run: |
+          npx json5 scenario.json5 | jq \
+            --argjson shard_index ${{ matrix.shard_index }} \
+            --argjson num_shards ${NUM_SHARDS} \
+            --argjson num_instances '${{ inputs.num_instances || 'null' }}' \
+            '
+             .components.gateway.config.assessment_config.shard_index = $shard_index |
+             .components.gateway.config.assessment_config.num_shards = $num_shards |
+             if $num_instances then .components.gateway.config.assessment_config.num_instances = $num_instances else . end
+            ' > patched.json
+          mv patched.json scenario.json5
 
       - name: Install amber CLI
         shell: bash
@@ -112,12 +110,6 @@ jobs:
           if ! jq -e '.exports[] | select(.name == "results" and .capability.kind == "http")' scenario-ir.json > /dev/null; then
             echo "Scenario must export an HTTP capability named 'results'" >&2
             exit 1
-          fi
-          if jq -e '.. | objects | select((.kind? == "docker") or (.kind? == "framework" and .capability? == "docker"))' scenario-ir.json > /dev/null; then
-            if [[ ! -S /var/run/docker.sock ]]; then
-              echo "Scenario uses framework.docker but /var/run/docker.sock is unavailable" >&2
-              exit 1
-            fi
           fi
 
       - name: Run scenario — shard-${{ matrix.shard_index }}
@@ -222,11 +214,11 @@ jobs:
             sleep 5
           done
           if [[ ! -f "${AMBER_COMPOSE_DIR}/output/results.json" ]]; then
-            echo "Timed out waiting ${RESULTS_TIMEOUT_MINUTES} minutes for batch results" >&2
+            echo "Timed out waiting ${RESULTS_TIMEOUT_MINUTES} minutes for shard results" >&2
             exit 1
           fi
           if [[ "${status}" != "completed" ]]; then
-            echo "Batch failed:" >&2
+            echo "Shard failed:" >&2
             cat "${AMBER_COMPOSE_DIR}/output/results.json" >&2
             exit 1
           fi
@@ -247,9 +239,11 @@ jobs:
 
   summary:
     needs: [setup, eval]
-    if: always()
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
+      - uses: actions/checkout@v6
       - name: Download all shard artifacts
         uses: actions/download-artifact@v8
         with:
@@ -281,15 +275,99 @@ jobs:
             status: (if all(.[]; .status == "completed") then "completed"
                     elif any(.[]; .status == "completed") then "partial"
                     else "failed" end),
-            results: [.[].results[] | if .results then .results[] else . end]
+            results: [.[].results[]]
           }' "${shard_results[@]}" > results.json
-          passed=$(jq '[.results[] | select(.passed == true)] | length' results.json)
-          total=$(jq '.results | length' results.json)
-          echo "=== Aggregate Results ==="
-          echo "Accuracy: ${passed}/${total}"
 
-      - name: Upload aggregate results
-        uses: actions/upload-artifact@v7
-        with:
-          name: eval-aggregate
-          path: results.json
+      - name: Validate and merge provenance
+        run: |
+          set -euo pipefail
+          shard_provenance=()
+          for i in $(seq 0 $(( ${NUM_SHARDS} - 1 ))); do
+            f="shard-artifacts/shard-${i}/provenance.json"
+            if [[ ! -f "$f" ]]; then
+              echo "ERROR: missing provenance for shard ${i}" >&2
+              ls -R shard-artifacts/ >&2 || true
+              exit 1
+            fi
+            shard_provenance+=("$f")
+          done
+          expected_image_digests=$(jq '.image_digests' "${shard_provenance[0]}")
+          expected_github_actions=$(jq '.github_actions' "${shard_provenance[0]}")
+          timestamps='[]'
+          manifest_digests='[]'
+          for f in "${shard_provenance[@]}"; do
+            got=$(jq '.image_digests' "$f")
+            if [[ "$got" != "$expected_image_digests" ]]; then
+              echo "ERROR: image_digests mismatch in $f" >&2; exit 1
+            fi
+            got=$(jq '.github_actions' "$f")
+            if [[ "$got" != "$expected_github_actions" ]]; then
+              echo "ERROR: github_actions mismatch in $f" >&2; exit 1
+            fi
+            timestamps=$(echo "$timestamps" | jq --argjson ts "$(jq '.timestamp' "$f")" '. + [$ts]')
+            manifest_digests=$(echo "$manifest_digests" | jq --argjson md "$(jq '.manifest_digests' "$f")" '. + [$md]')
+          done
+          jq -n \
+            --argjson image_digests "$expected_image_digests" \
+            --argjson manifest_digests "$(echo "$manifest_digests" | jq '.[0]')" \
+            --arg timestamp "$(echo "$timestamps" | jq -r '.[0]')" \
+            --argjson github_actions "$expected_github_actions" \
+            '{
+              image_digests: $image_digests,
+              manifest_digests: $manifest_digests,
+              timestamp: $timestamp,
+              github_actions: $github_actions
+            }' > provenance.json
+          echo "Provenance:"
+          cat provenance.json
+
+      - name: Generate submission metadata
+        id: metadata
+        run: |
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          USERNAME=${{ github.repository_owner }}
+          UNIQUE_NAME="${USERNAME}-${TIMESTAMP}"
+          echo "unique_name=$UNIQUE_NAME" >> $GITHUB_OUTPUT
+          echo "branch_name=submission-${UNIQUE_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Determine target repository
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PARENT_REPO=$(gh api repos/${{ github.repository }} --jq '.parent.full_name // "${{ github.repository }}"')
+          echo "Target repository: $PARENT_REPO"
+          echo "repo=$PARENT_REPO" >> $GITHUB_OUTPUT
+
+      - name: Create submission branch and commit results
+        env:
+          UNIQUE_NAME: ${{ steps.metadata.outputs.unique_name }}
+          BRANCH_NAME: ${{ steps.metadata.outputs.branch_name }}
+          TARGET_REPO: ${{ steps.target.outputs.repo }}
+        run: |
+          cp scenario.json5 /tmp/scenario.json5
+          git remote add upstream https://github.com/${TARGET_REPO}.git
+          git fetch upstream
+          git checkout -b ${BRANCH_NAME} upstream/main
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          mkdir -p results submissions
+          cp /tmp/scenario.json5 "submissions/${UNIQUE_NAME}.json5"
+          mv results.json "results/${UNIQUE_NAME}.json"
+          mv provenance.json "submissions/${UNIQUE_NAME}-provenance.json"
+          git add "results/${UNIQUE_NAME}.json" "submissions/${UNIQUE_NAME}-provenance.json" "submissions/${UNIQUE_NAME}.json5"
+          git commit -m "Submission: ${UNIQUE_NAME}
+
+          Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          git push origin ${BRANCH_NAME}
+          echo "::notice title=Submission Branch Created::Your results are ready for submission on branch: ${BRANCH_NAME}"
+
+      - name: Output PR link
+        env:
+          TARGET_REPO: ${{ steps.target.outputs.repo }}
+          BRANCH_NAME: ${{ steps.metadata.outputs.branch_name }}
+        run: |
+          echo "### Submit your results" >> $GITHUB_STEP_SUMMARY
+          echo "[Click here to open a pull request](https://github.com/${TARGET_REPO}/compare/main...${{ github.repository_owner }}:${{ github.event.repository.name }}:${BRANCH_NAME}?expand=1)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "When creating the PR, UNCHECK 'Allow edits and access to secrets by maintainers' to protect your secrets." >> $GITHUB_STEP_SUMMARY

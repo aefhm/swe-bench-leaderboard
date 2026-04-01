@@ -1,0 +1,22 @@
+{
+  "image_digests": {
+    "/coding_agent": "ghcr.io/aefhm/swe-bench-purple-agent@sha256:c5d76a34d051bd6e4860752d482cdf1c093f2b142a9f82d48ccd3151dc36d3fa",
+    "/gateway": "ghcr.io/rdi-foundation/agentbeats-gateway@sha256:3f9976889c598092dc4273312ec431cbc48bbe064ff65b5613425f4990bc1d4c",
+    "/green": "ghcr.io/aefhm/swe-bench-green-agent@sha256:c548fc7d787a1b3c83bcd6fe406f6ad8d86d6ba3ec3db3b9661eadbc96451fe2"
+  },
+  "manifest_digests": {
+    "/": "sha256:nad73Mbq6gqlY011lppzUtyJyixhG+fSKHEt3PpuXrA=",
+    "/coding_agent": "sha256:KdWDZlGGirYI/zc6lsK2GCpTbIZPS6utLJMc6VMG2Ao=",
+    "/gateway": "sha256:0nK+Cnn/T4UOQIP2JqNrAx8gHGVWjBsCUTBFgYgC44c=",
+    "/green": "sha256:lQXBKpsEzChdi9YIq+LWgRFAGLrv33eTzC9ssCry0jI="
+  },
+  "timestamp": "2026-04-01T19:52:05Z",
+  "github_actions": {
+    "run_url": "https://github.com/aefhm/swe-bench-leaderboard/actions/runs/23867702230",
+    "ref": "refs/heads/main",
+    "sha": "fe4fb148f247128a8af68cf33b3effcdd4fccb96",
+    "repository_url": "https://github.com/aefhm/swe-bench-leaderboard",
+    "workflow_ref": "aefhm/swe-bench-leaderboard/.github/workflows/run-scenario.yml@refs/heads/main",
+    "workflow_sha": "fe4fb148f247128a8af68cf33b3effcdd4fccb96"
+  }
+}

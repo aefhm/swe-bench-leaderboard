@@ -11,6 +11,10 @@ on:
         description: "Total number of task instances to run across all shards (empty = all)"
         default: ""
         type: string
+      model_name:
+        description: "Model name for the coding agent (e.g. openrouter/deepseek/deepseek-v3.2)"
+        default: ""
+        type: string
 
 env:
   NUM_SHARDS: ${{ inputs.num_shards || '20' }}
@@ -71,6 +75,10 @@ jobs:
           echo "$SECRETS_JSON" | jq -r \
             'to_entries[] | select(.key != "GITHUB_TOKEN") | "AMBER_CONFIG_\(.key | ascii_upcase)=\(.value | sub("\\s+$";""))"' \
             >> "${GITHUB_ENV}"
+
+      - name: Export model name
+        if: ${{ inputs.model_name != '' }}
+        run: echo "AMBER_CONFIG_CODING_AGENT__MODEL_NAME=${{ inputs.model_name }}" >> "${GITHUB_ENV}"
 
       - name: Patch shard config into scenario
         run: |

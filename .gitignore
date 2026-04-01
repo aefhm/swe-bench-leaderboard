@@ -5,4 +5,4 @@ scenario-ir.json
 .env
 .env.example
 output/
-amber-out/
+amber-compose/

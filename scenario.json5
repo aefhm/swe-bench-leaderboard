@@ -2,8 +2,6 @@
   manifest_version: "0.3.0",
   experimental_features: ["docker"],
 
-  // Root config: runtime secrets forwarded into component configs via AMBER_CONFIG_* env vars.
-  // All fields are optional — submitters provide whichever API keys their model needs.
   config_schema: {
     type: "object",
     properties: {
@@ -24,17 +22,6 @@
   },
 
   components: {
-    gateway: {
-      manifest: "https://raw.githubusercontent.com/RDI-Foundation/agentbeats-gateway/refs/tags/v0.3/amber-manifest.json5",
-      config: {
-        assessment_config: {},
-        participant_roles: {
-          green: "green",
-          purple1: "coding_agent",
-        },
-        callback_urls: {},
-      },
-    },
     green: {
       manifest: "./green-agent.json5",
       config: {},
@@ -56,13 +43,11 @@
   },
 
   bindings: [
-    { to: "#gateway.green", from: "#green.a2a" },
-    { to: "#gateway.purple1", from: "#coding_agent.a2a" },
-    { to: "#green.coding_agent", from: "#gateway.proxy", weak: true },
+    { to: "#green.coding_agent", from: "#coding_agent.a2a" },
     { to: "#coding_agent.llm", from: "slots.llm", weak: true },
   ],
 
   exports: {
-    results: "#gateway.results",
+    results: "#green.results",
   },
 }

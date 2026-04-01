@@ -1,0 +1,20 @@
+{
+  "status": "completed",
+  "results": [
+    {
+      "status": "completed",
+      "accuracy": 0.0,
+      "passed": 0,
+      "total": 1,
+      "results": [
+        {
+          "instance_id": "instance_NodeBB__NodeBB-04998908ba6721d64eba79ae3b65a351dcfbc5b5-vnan",
+          "passed": false,
+          "fail_to_pass_ok": false,
+          "pass_to_pass_ok": false,
+          "error": "Participant communication error: HTTP Error 404: Failed to fetch agent card from http://127.0.0.1:8080/.well-known/agent-card.json: Client error '404 Not Found' for url 'http://127.0.0.1:8080/.well-known/agent-card.json'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404"
+        }
+      ]
+    }
+  ]
+}

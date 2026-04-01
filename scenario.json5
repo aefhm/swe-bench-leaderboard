@@ -63,7 +63,7 @@
   bindings: [
     { to: "#gateway.green", from: "#green.a2a" },
     { to: "#gateway.purple1", from: "#coding_agent.a2a" },
-    { to: "#green.coding_agent", from: "#gateway.proxy", weak: true },
+    { to: "#green.coding_agent", from: "#coding_agent.a2a" },
     { to: "#coding_agent.llm", from: "slots.llm", weak: true },
   ],
 

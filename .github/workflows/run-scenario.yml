@@ -120,11 +120,6 @@ jobs:
             exit 1
           fi
 
-      - name: Enable egress for coding agent
-        run: |
-          yq -i '.services.c1-coding-agent-net.networks.default = {}' \
-            "${AMBER_COMPOSE_DIR}/compose.yaml"
-
       - name: Run scenario — shard-${{ matrix.shard_index }}
         shell: bash
         run: |

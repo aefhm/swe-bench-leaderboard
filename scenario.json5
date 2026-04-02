@@ -54,17 +54,23 @@
         gemini_api_key: "${config.coding_agent.gemini_api_key}",
       },
     },
-  },
-
-  slots: {
-    llm: { kind: "llm" },
+    llm_router: {
+      manifest: "./litellm.json5",
+      config: {
+        model_name: "${config.coding_agent.model_name}",
+        openrouter_api_key: "${config.coding_agent.openrouter_api_key}",
+        anthropic_api_key: "${config.coding_agent.anthropic_api_key}",
+        openai_api_key: "${config.coding_agent.openai_api_key}",
+        gemini_api_key: "${config.coding_agent.gemini_api_key}",
+      },
+    },
   },
 
   bindings: [
     { to: "#gateway.green", from: "#green.a2a" },
     { to: "#gateway.purple1", from: "#coding_agent.a2a" },
     { to: "#green.coding_agent", from: "#coding_agent.a2a" },
-    { to: "#coding_agent.llm", from: "slots.llm", weak: true },
+    { to: "#coding_agent.llm", from: "#llm_router.llm" },
   ],
 
   exports: {

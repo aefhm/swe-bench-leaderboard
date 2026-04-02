@@ -1,0 +1,28 @@
+{
+  manifest_version: "0.3.0",
+  program: {
+    image: "nginx:1.27-alpine",
+    entrypoint: [
+      "sh",
+      "-lc",
+      { file: "./litellm-proxy.sh" },
+    ],
+    env: {
+      BACKEND_URL: "${slots.backend.url}",
+    },
+    network: {
+      endpoints: [
+        { name: "router", port: 8081 },
+        { name: "admin-api", port: 8082 },
+      ],
+    },
+  },
+  slots: {
+    backend: { kind: "http" },
+  },
+  provides: {
+    llm: { kind: "llm", endpoint: "router" },
+    admin_api: { kind: "http", endpoint: "admin-api" },
+  },
+  exports: { llm: "llm", admin_api: "admin_api" },
+}

@@ -57,7 +57,7 @@
   },
 
   slots: {
-    llm: { kind: "http" },
+    llm: { kind: "llm" },
   },
 
   bindings: [

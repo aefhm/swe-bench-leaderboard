@@ -48,7 +48,7 @@
   },
 
     slots: {
-      llm: { kind: "http" },  // OpenRouter API endpoint
+      llm: { kind: "llm" },
     },
   exports: { a2a: "a2a" },
 }

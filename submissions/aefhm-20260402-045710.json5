@@ -1,0 +1,73 @@
+{
+  manifest_version: "0.3.0",
+  experimental_features: ["docker"],
+
+  metadata: {
+    agentbeats_ids: {
+      green: "",       // your green agent ID from agentbeats.dev
+      coding_agent: "", // submitter fills this in
+    },
+  },
+
+  config_schema: {
+    type: "object",
+    properties: {
+      coding_agent: {
+        type: "object",
+        properties: {
+          model_name: { type: "string" },
+          openai_api_key: { type: "string" },
+          anthropic_api_key: { type: "string" },
+          openrouter_api_key: { type: "string" },
+          gemini_api_key: { type: "string" },
+        },
+        additionalProperties: false,
+      },
+    },
+    required: [],
+    additionalProperties: false,
+  },
+
+  components: {
+    gateway: {
+      manifest: "https://raw.githubusercontent.com/RDI-Foundation/agentbeats-gateway/refs/tags/v0.3/amber-manifest.json5",
+      config: {
+        assessment_config: {},
+        participant_roles: {
+          green: "green",
+          purple1: "coding_agent",
+        },
+        callback_urls: {},
+      },
+    },
+    green: {
+      manifest: "./green-agent.json5",
+      config: {},
+    },
+    coding_agent: {
+      manifest: "./purple-agent.json5",
+      config: {
+        model_name: "${config.coding_agent.model_name}",
+        openai_api_key: "${config.coding_agent.openai_api_key}",
+        anthropic_api_key: "${config.coding_agent.anthropic_api_key}",
+        openrouter_api_key: "${config.coding_agent.openrouter_api_key}",
+        gemini_api_key: "${config.coding_agent.gemini_api_key}",
+      },
+    },
+  },
+
+  slots: {
+    llm: { kind: "llm" },
+  },
+
+  bindings: [
+    { to: "#gateway.green", from: "#green.a2a" },
+    { to: "#gateway.purple1", from: "#coding_agent.a2a" },
+    { to: "#green.coding_agent", from: "#coding_agent.a2a" },
+    { to: "#coding_agent.llm", from: "slots.llm", weak: true },
+  ],
+
+  exports: {
+    results: "#gateway.results",
+  },
+}

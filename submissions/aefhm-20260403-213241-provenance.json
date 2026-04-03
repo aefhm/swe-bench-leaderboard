@@ -1,0 +1,26 @@
+{
+  "image_digests": {
+    "/coding_agent": "ghcr.io/aefhm/swe-bench-purple-agent@sha256:2108787426ff71389b47cb8d277072fba6d8b6b20f03d6d358dc3efa5021ac65",
+    "/gateway": "ghcr.io/rdi-foundation/agentbeats-gateway@sha256:3f9976889c598092dc4273312ec431cbc48bbe064ff65b5613425f4990bc1d4c",
+    "/green": "ghcr.io/aefhm/swe-bench-green-agent@sha256:c548fc7d787a1b3c83bcd6fe406f6ad8d86d6ba3ec3db3b9661eadbc96451fe2",
+    "/llm_router": "litellm/litellm@sha256:9a03bac8b54f6e8b25359e713740d40fe5caf5ca88b5baa0dfcd78f95a95eeb7",
+    "/llm_router/proxy": "nginxinc/nginx-unprivileged@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0"
+  },
+  "manifest_digests": {
+    "/": "sha256:CiskCSeMms4v4h713Ww2ZfGOsZX14qVz3L4aR3+ruz4=",
+    "/coding_agent": "sha256:m+S19J6RLt7XIOOefpWUOFIqAkjdqSO86HlvPp4KFJ0=",
+    "/gateway": "sha256:0nK+Cnn/T4UOQIP2JqNrAx8gHGVWjBsCUTBFgYgC44c=",
+    "/green": "sha256:lQXBKpsEzChdi9YIq+LWgRFAGLrv33eTzC9ssCry0jI=",
+    "/llm_router": "sha256:DJ2NA//D08Kro8puyq8bcyf+uCIDQzsT1qFLScDI1OM=",
+    "/llm_router/proxy": "sha256:/fYHQaaVqXgcup1R2oJfDAyuML1l16R7nxOSemtAIMA="
+  },
+  "timestamp": "2026-04-03T20:38:14Z",
+  "github_actions": {
+    "run_url": "https://github.com/aefhm/swe-bench-leaderboard/actions/runs/23961320752",
+    "ref": "refs/heads/main",
+    "sha": "ff321706985edcb8b53c7a6f105af3aa33e2edb9",
+    "repository_url": "https://github.com/aefhm/swe-bench-leaderboard",
+    "workflow_ref": "aefhm/swe-bench-leaderboard/.github/workflows/run-scenario.yml@refs/heads/main",
+    "workflow_sha": "ff321706985edcb8b53c7a6f105af3aa33e2edb9"
+  }
+}

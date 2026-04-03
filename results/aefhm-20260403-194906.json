@@ -1,0 +1,25 @@
+{
+  "status": "completed",
+  "results": [
+    {
+      "status": "completed",
+      "accuracy": 0.0,
+      "passed": 0,
+      "total": 1,
+      "participant": {
+        "name": "SWE-bench Purple Agent",
+        "version": "0.1.0",
+        "description": "A2A coding agent that solves SWE-bench Pro instances using mini-swe-agent (openrouter/deepseek/deepseek-v3.2)."
+      },
+      "results": [
+        {
+          "instance_id": "instance_NodeBB__NodeBB-04998908ba6721d64eba79ae3b65a351dcfbc5b5-vnan",
+          "passed": false,
+          "fail_to_pass_ok": false,
+          "pass_to_pass_ok": false,
+          "error": "Participant communication error: Timeout Error: Client Request timed out"
+        }
+      ]
+    }
+  ]
+}

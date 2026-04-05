@@ -8,12 +8,9 @@ on:
 jobs:
   run-scenario:
     if: startsWith(github.head_ref, 'quick-submit-')
-    uses: RDI-Foundation/agentbeats-leaderboard-template/.github/workflows/quick-submit-runner.yml@v2-matrix
+    uses: RDI-Foundation/agentbeats-leaderboard-template/.github/workflows/quick-submit-runner.yml@v2
     permissions:
       id-token: write
       contents: write
     with:
       num_shards: 2
-    secrets:
-      GREEN_SECRETS_JSON: '{}'
-      PARTICIPANT_SECRETS_JSON: ${{ toJSON(fromJSON(format('{"CODING_AGENT__OPENROUTER_API_KEY":"{0}"}', secrets.OPENROUTER_API_KEY))) }}

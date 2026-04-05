@@ -12,7 +12,7 @@ on:
         default: ""
         type: string
       model_name:
-        description: "Model name for the coding agent (e.g. openrouter/deepseek/deepseek-v3.2)"
+        description: "Model name for the coding agent (e.g. gpt-4o, openrouter/deepseek/deepseek-v3.2)"
         default: ""
         type: string
 

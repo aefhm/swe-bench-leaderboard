@@ -4,14 +4,19 @@ A leaderboard for evaluating coding agents on [SWE-bench Pro](https://huggingfac
 
 ## How to submit
 
-### Option 1: Fork and run (scenario.toml)
+### Option 1: Fork and run (`scenario.json5`)
 
 1. Fork this repository
-2. Edit `scenario.toml`:
-   - Set your agent's `agentbeats_id` in the `[[participants]]` section
-   - Add your API keys as GitHub Secrets (e.g., `OPENROUTER_API_KEY`)
-3. Push to any branch — the `run-scenario.yml` workflow runs automatically
-4. When complete, follow the PR link in the workflow summary to submit your results
+2. Edit `scenario.json5`:
+   - Set your agent's Agentbeats ID in `metadata.agentbeats_ids.coding_agent`
+   - Adjust `components.gateway.config.assessment_config` if you want a smaller or sharded run
+3. Add whichever coding-agent secrets you need as repo secrets:
+   - `CODING_AGENT__OPENAI_API_KEY`
+   - `CODING_AGENT__OPENROUTER_API_KEY`
+   - `CODING_AGENT__ANTHROPIC_API_KEY`
+   - `CODING_AGENT__GEMINI_API_KEY`
+4. Open or update a PR to `main`, or trigger `Run Scenario` manually from the Actions tab
+5. When complete, follow the PR link in the workflow summary to submit your results
 
 ### Option 2: Quick submit (agentbeats.dev)
 
@@ -47,20 +52,23 @@ Run the full evaluation stack locally using `amber compile` and Docker Compose.
 ### Quick start
 
 ```bash
-# 1. Compile the scenario
+# 1. (Optional) edit scenario.json5 to set a small local run
+#    e.g. components.gateway.config.assessment_config.num_instances = 1
+
+# 2. Compile the scenario
 amber compile scenario.json5 --docker-compose amber-out
 
-# 2. Patch compose to bypass the Docker gateway proxy (required — see note below)
-python3 patch_amber_compose.py amber-out/compose.yaml
+# 3. Fill in the generated env file
+cp amber-out/env.example amber-out/.env
+$EDITOR amber-out/.env
 
-# 3. Run a single instance
+# 4. Run the stack
 AMBER_CONFIG_CODING_AGENT__MODEL_NAME=openrouter/deepseek/deepseek-v3.2 \
 AMBER_CONFIG_CODING_AGENT__OPENROUTER_API_KEY=sk-or-xxx \
-AMBER_CONFIG_GREEN__INSTANCE_IDS=nodebb-001 \
-docker compose -f amber-out/compose.yaml up
+docker compose -f amber-out/compose.yaml --env-file amber-out/.env up
 ```
 
-Replace the API key env var with whichever provider you're using (see `amber-out/env.example` for all options). Omit `INSTANCE_IDS` to run the full batch.
+Replace the inline env vars with whichever provider you use, or keep everything in `amber-out/.env`. The generated `amber-out/env.example` lists the supported coding-agent inputs.
 
 ### Environment variables
 
@@ -71,9 +79,8 @@ Replace the API key env var with whichever provider you're using (see `amber-out
 | `AMBER_CONFIG_CODING_AGENT__ANTHROPIC_API_KEY` | Anthropic API key |
 | `AMBER_CONFIG_CODING_AGENT__OPENAI_API_KEY` | OpenAI API key |
 | `AMBER_CONFIG_CODING_AGENT__GEMINI_API_KEY` | Gemini API key |
-| `AMBER_CONFIG_GREEN__INSTANCE_IDS` | Comma-separated instance short IDs (empty = all) |
-| `AMBER_CONFIG_GREEN__BATCH_INDEX` | 0-based batch index (default: `0`) |
-| `AMBER_CONFIG_GREEN__TOTAL_BATCHES` | Total batches (default: `1`) |
+
+For local instance selection and sharding, edit `components.gateway.config.assessment_config` in `scenario.json5`. In CI, the `Run Scenario` workflow can override `num_instances`, `num_shards`, and `model_name` via workflow inputs.
 
 ### Viewing results
 
@@ -90,17 +97,14 @@ amber proxy amber-out --export results=127.0.0.1:18080
 docker compose -f amber-out/compose.yaml down -v
 ```
 
-### Note: Docker gateway workaround
-
-The `patch_amber_compose.py` step is required because `amber-docker-gateway:v0.1` drops connections when proxying Docker API calls, causing `docker run` inside containers to fail with exit 125. The patch mounts `/var/run/docker.sock` directly into containers, bypassing the gateway. This same patch is applied automatically in CI workflows.
-
 ## Configuration
 
-`scenario.toml` supports these config options:
+The main benchmark controls live in `scenario.json5` under `components.gateway.config.assessment_config`:
 
-```toml
-[config]
-instances = []           # empty = all 731 instances
-# instances = ["ansible-001", "django-003"]  # or specify by short_id
-max_instances = 0        # 0 = no limit
+```json5
+assessment_config: {
+  num_instances: 2,  // deterministic first N instances
+  shard_index: 0,    // 0-based shard index
+  num_shards: 1,     // total shard count
+}
 ```

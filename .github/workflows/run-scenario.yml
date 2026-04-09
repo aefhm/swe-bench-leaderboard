@@ -1,6 +1,13 @@
 name: Run Scenario
 
 on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - "scenario.json5"
+      - "green-agent.json5"
+      - "purple-agent.json5"
+      - ".github/workflows/run-scenario.yml"
   workflow_dispatch:
     inputs:
       num_shards:

@@ -13,4 +13,4 @@ jobs:
       id-token: write
       contents: write
     with:
-      num_shards: 10
+      num_shards: 15

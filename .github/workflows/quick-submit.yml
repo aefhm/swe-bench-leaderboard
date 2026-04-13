@@ -14,3 +14,4 @@ jobs:
       contents: write
     with:
       num_shards: 20
+      num_instances: 20

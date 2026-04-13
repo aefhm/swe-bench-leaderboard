@@ -63,8 +63,8 @@ cp amber-out/env.example amber-out/.env
 $EDITOR amber-out/.env
 
 # 4. Run the stack
-AMBER_CONFIG_CODING_AGENT__MODEL_NAME=openrouter/deepseek/deepseek-v3.2 \
-AMBER_CONFIG_CODING_AGENT__OPENROUTER_API_KEY=sk-or-xxx \
+AMBER_CONFIG_CODING_AGENT__MODEL_NAME=gpt-4o \
+AMBER_CONFIG_CODING_AGENT__OPENAI_API_KEY=sk-xxx \
 docker compose -f amber-out/compose.yaml --env-file amber-out/.env up
 ```
 
@@ -104,7 +104,13 @@ The main benchmark controls live in `scenario.json5` under `components.gateway.c
 ```json5
 assessment_config: {
   num_instances: 2,  // deterministic first N instances
-  shard_index: 0,    // 0-based shard index
   num_shards: 1,     // total shard count
 }
 ```
+
+## Related repositories
+
+| Repo | Description |
+|---|---|
+| [swe-bench-green-agent](https://github.com/rdi-foundation/swe-bench-green-agent) | Evaluation orchestrator |
+| [swe-bench-purple-agent](https://github.com/rdi-foundation/swe-bench-purple-agent) | Reference coding agent |

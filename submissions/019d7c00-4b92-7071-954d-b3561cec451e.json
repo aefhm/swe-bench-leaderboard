@@ -1,0 +1,93 @@
+{
+  "manifest_version": "0.1.0",
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "coding_agent_anthropic_api_key": {
+        "type": "string",
+        "secret": true
+      },
+      "coding_agent_gemini_api_key": {
+        "type": "string",
+        "secret": true
+      },
+      "coding_agent_model_name": {
+        "type": "string",
+        "description": "LLM model name (e.g., gpt-4o, openrouter/deepseek/deepseek-v3.2, anthropic/claude-sonnet-4-5-20250929, gemini/gemini-2.5-pro)",
+        "default": "gpt-4o"
+      },
+      "coding_agent_openai_api_key": {
+        "type": "string",
+        "secret": true
+      },
+      "coding_agent_openrouter_api_key": {
+        "type": "string",
+        "secret": true
+      },
+      "coding_agent_subprocess_timeout_seconds": {
+        "type": "integer",
+        "description": "Wall-clock timeout for one mini-swe-agent subprocess run.",
+        "default": 900
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "components": {
+    "gateway": {
+      "manifest": "https://raw.githubusercontent.com/RDI-Foundation/agentbeats-gateway/refs/tags/v0.3/amber-manifest.json5",
+      "config": {
+        "assessment_config": {
+          "num_shards": 15
+        },
+        "participant_roles": {
+          "green": "green",
+          "purple1": "coding_agent"
+        },
+        "callback_urls": {}
+      }
+    },
+    "green": {
+      "manifest": "https://raw.githubusercontent.com/aefhm/swe-bench-green-agent/refs/heads/main/amber-manifest.json5",
+      "config": {}
+    },
+    "coding_agent": {
+      "manifest": "https://raw.githubusercontent.com/aefhm/swe-bench-purple-agent/refs/heads/main/amber-manifest.json5",
+      "config": {
+        "anthropic_api_key": "${config.coding_agent_anthropic_api_key}",
+        "gemini_api_key": "${config.coding_agent_gemini_api_key}",
+        "model_name": "${config.coding_agent_model_name}",
+        "openai_api_key": "${config.coding_agent_openai_api_key}",
+        "openrouter_api_key": "${config.coding_agent_openrouter_api_key}",
+        "subprocess_timeout_seconds": "${config.coding_agent_subprocess_timeout_seconds}"
+      }
+    }
+  },
+  "bindings": [
+    {
+      "to": "#gateway.green",
+      "from": "#green.a2a"
+    },
+    {
+      "to": "#gateway.purple1",
+      "from": "#coding_agent.a2a"
+    },
+    {
+      "to": "#green.proxy",
+      "from": "#gateway.proxy",
+      "weak": true
+    }
+  ],
+  "exports": {
+    "results": "#gateway.results"
+  },
+  "metadata": {
+    "agentbeats_ids": {
+      "green": "019d1bc8-0e15-7182-8e39-c57f9764666b",
+      "coding_agent": "019d083d-92e8-7ba1-9450-5e98602b28cc"
+    }
+  },
+  "experimental_features": [
+    "docker"
+  ]
+}
